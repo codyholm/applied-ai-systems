@@ -1,6 +1,13 @@
 import csv
-from typing import List, Dict, Tuple, Optional
+from typing import Any, List, Dict, Tuple, Optional
 from dataclasses import dataclass
+
+GENRE_WEIGHT = 1.5
+MOOD_WEIGHT = 2.0
+ENERGY_WEIGHT = 2.5
+TEMPO_WEIGHT = 2.0
+ACOUSTIC_WEIGHT = 1.5
+TEMPO_RANGE = 92.0
 
 @dataclass
 class Song:
@@ -66,6 +73,68 @@ def load_songs(csv_path: str) -> List[Dict]:
 
     print(f"Loaded songs: {len(songs)}")
     return songs
+
+
+def _clamp_similarity(value: float) -> float:
+    return max(0.0, min(value, 1.0))
+
+
+def _get_user_pref(user_prefs: Dict[str, Any], *keys: str) -> Optional[Any]:
+    for key in keys:
+        if key in user_prefs and user_prefs[key] is not None:
+            return user_prefs[key]
+    return None
+
+
+def score_song(user_prefs: Dict[str, Any], song: Dict[str, Any]) -> Tuple[float, List[str]]:
+    """
+    Scores one song against a user's preferences and returns reasons.
+    """
+    score = 0.0
+    reasons: List[str] = []
+
+    favorite_genre = _get_user_pref(user_prefs, "favorite_genre", "genre")
+    favorite_mood = _get_user_pref(user_prefs, "favorite_mood", "mood")
+    target_energy = _get_user_pref(user_prefs, "target_energy", "energy")
+    target_tempo = _get_user_pref(user_prefs, "target_tempo_bpm", "tempo_bpm")
+    target_acousticness = _get_user_pref(
+        user_prefs, "target_acousticness", "acousticness"
+    )
+
+    if favorite_genre == song["genre"]:
+        score += GENRE_WEIGHT
+        reasons.append(f"genre match (+{GENRE_WEIGHT:.1f})")
+
+    if favorite_mood == song["mood"]:
+        score += MOOD_WEIGHT
+        reasons.append(f"mood match (+{MOOD_WEIGHT:.1f})")
+
+    if target_energy is not None:
+        energy_similarity = _clamp_similarity(1 - abs(song["energy"] - float(target_energy)))
+        energy_points = ENERGY_WEIGHT * energy_similarity
+        score += energy_points
+        reasons.append(f"energy similarity (+{energy_points:.2f})")
+
+    if target_tempo is not None:
+        tempo_similarity = _clamp_similarity(
+            1 - min(abs(song["tempo_bpm"] - float(target_tempo)) / TEMPO_RANGE, 1)
+        )
+        tempo_points = TEMPO_WEIGHT * tempo_similarity
+        score += tempo_points
+        reasons.append(f"tempo similarity (+{tempo_points:.2f})")
+
+    if target_acousticness is None and "likes_acoustic" in user_prefs:
+        target_acousticness = 1.0 if user_prefs["likes_acoustic"] else 0.0
+
+    if target_acousticness is not None:
+        acoustic_similarity = _clamp_similarity(
+            1 - abs(song["acousticness"] - float(target_acousticness))
+        )
+        acoustic_points = ACOUSTIC_WEIGHT * acoustic_similarity
+        score += acoustic_points
+        reasons.append(f"acousticness similarity (+{acoustic_points:.2f})")
+
+    return score, reasons
 
 def recommend_songs(user_prefs: Dict, songs: List[Dict], k: int = 5) -> List[Tuple[Dict, float, str]]:
     """
