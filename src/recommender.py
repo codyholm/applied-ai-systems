@@ -7,6 +7,8 @@ MOOD_WEIGHT = 2.0
 ENERGY_WEIGHT = 2.5
 TEMPO_WEIGHT = 2.0
 ACOUSTIC_WEIGHT = 1.5
+VALENCE_WEIGHT = 2.0
+DANCEABILITY_WEIGHT = 1.5
 TEMPO_RANGE = 92.0
 
 @dataclass
@@ -97,6 +99,10 @@ def score_song(user_prefs: Dict[str, Any], song: Dict[str, Any]) -> Tuple[float,
     target_acousticness = _get_user_pref(
         user_prefs, "target_acousticness", "acousticness"
     )
+    target_valence = _get_user_pref(user_prefs, "target_valence", "valence")
+    target_danceability = _get_user_pref(
+        user_prefs, "target_danceability", "danceability"
+    )
 
     if favorite_genre == song["genre"]:
         score += GENRE_WEIGHT
@@ -130,6 +136,22 @@ def score_song(user_prefs: Dict[str, Any], song: Dict[str, Any]) -> Tuple[float,
         acoustic_points = ACOUSTIC_WEIGHT * acoustic_similarity
         score += acoustic_points
         reasons.append(f"acousticness similarity (+{acoustic_points:.2f})")
+
+    if target_valence is not None:
+        valence_similarity = _clamp_similarity(
+            1 - abs(song["valence"] - float(target_valence))
+        )
+        valence_points = VALENCE_WEIGHT * valence_similarity
+        score += valence_points
+        reasons.append(f"valence similarity (+{valence_points:.2f})")
+
+    if target_danceability is not None:
+        danceability_similarity = _clamp_similarity(
+            1 - abs(song["danceability"] - float(target_danceability))
+        )
+        danceability_points = DANCEABILITY_WEIGHT * danceability_similarity
+        score += danceability_points
+        reasons.append(f"danceability similarity (+{danceability_points:.2f})")
 
     return score, reasons
 

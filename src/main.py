@@ -17,6 +17,8 @@ user_profiles = [
             "target_energy": 0.85,
             "target_tempo_bpm": 124,
             "target_acousticness": 0.15,
+            "target_valence": 0.85,
+            "target_danceability": 0.85,
         },
     ),
     (
@@ -27,6 +29,8 @@ user_profiles = [
             "target_energy": 0.35,
             "target_tempo_bpm": 78,
             "target_acousticness": 0.80,
+            "target_valence": 0.55,
+            "target_danceability": 0.50,
         },
     ),
     (
@@ -37,6 +41,8 @@ user_profiles = [
             "target_energy": 0.90,
             "target_tempo_bpm": 145,
             "target_acousticness": 0.10,
+            "target_valence": 0.45,
+            "target_danceability": 0.65,
         },
     ),
     (
@@ -47,6 +53,8 @@ user_profiles = [
             "target_energy": 0.25,
             "target_tempo_bpm": 75,
             "target_acousticness": 0.85,
+            "target_valence": 0.50,
+            "target_danceability": 0.30,
         },
     ),
     (
@@ -57,6 +65,8 @@ user_profiles = [
             "target_energy": 1.0,
             "target_tempo_bpm": 200,
             "target_acousticness": 0.0,
+            "target_valence": 1.0,
+            "target_danceability": 1.0,
         },
     ),
 ]
