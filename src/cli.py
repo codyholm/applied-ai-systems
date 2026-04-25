@@ -2,68 +2,15 @@ from __future__ import annotations
 
 import os
 import sys
-from typing import Any
 
 from dotenv import load_dotenv
 
+from src.agents.profile_extractor import ProfileExtractionError
 from src.llm.client import CachedLLMClient, GeminiClient, LLMClient, StubLLMClient
 from src.pipeline import PipelineResult, run_pipeline
-from src.recommender import UserProfile
 
 
-BUILTIN_PROFILES: dict[str, dict[str, Any]] = {
-    "high_energy_pop": {
-        "favorite_genre": "pop",
-        "favorite_mood": "happy",
-        "target_energy": 0.85,
-        "target_tempo_bpm": 124.0,
-        "target_acousticness": 0.15,
-        "target_valence": 0.85,
-        "target_danceability": 0.85,
-    },
-    "chill_lofi": {
-        "favorite_genre": "lofi",
-        "favorite_mood": "chill",
-        "target_energy": 0.35,
-        "target_tempo_bpm": 78.0,
-        "target_acousticness": 0.80,
-        "target_valence": 0.55,
-        "target_danceability": 0.50,
-    },
-    "deep_intense_rock": {
-        "favorite_genre": "rock",
-        "favorite_mood": "intense",
-        "target_energy": 0.90,
-        "target_tempo_bpm": 145.0,
-        "target_acousticness": 0.10,
-        "target_valence": 0.45,
-        "target_danceability": 0.65,
-    },
-    "chill_rock": {
-        "favorite_genre": "rock",
-        "favorite_mood": "chill",
-        "target_energy": 0.25,
-        "target_tempo_bpm": 75.0,
-        "target_acousticness": 0.85,
-        "target_valence": 0.50,
-        "target_danceability": 0.30,
-    },
-    "boundary_maximalist": {
-        "favorite_genre": "electronic",
-        "favorite_mood": "intense",
-        "target_energy": 1.0,
-        "target_tempo_bpm": 200.0,
-        "target_acousticness": 0.0,
-        "target_valence": 1.0,
-        "target_danceability": 1.0,
-    },
-}
-
-
-USAGE = (
-    "Usage: python -m src.cli <profile_name>\n"
-    f"  profile_name in {sorted(BUILTIN_PROFILES)}"
-)
+USAGE = 'Usage: python -m src.cli "<natural-language request>"'
 
 
 def _build_client() -> LLMClient:
@@ -77,10 +24,36 @@ def _build_client() -> LLMClient:
     return StubLLMClient([])
 
 
-def _render(profile_name: str, result: PipelineResult) -> str:
+def _format_profile_block(result: PipelineResult) -> list[str]:
+    p = result.extracted_profile
+    return [
+        "Extracted profile:",
+        f"  favorite_genre:       {p.favorite_genre}",
+        f"  favorite_mood:        {p.favorite_mood}",
+        f"  target_energy:        {p.target_energy}",
+        f"  target_tempo_bpm:     {p.target_tempo_bpm}",
+        f"  target_valence:       {p.target_valence}",
+        f"  target_danceability:  {p.target_danceability}",
+        f"  target_acousticness:  {p.target_acousticness}",
+    ]
+
+
+def _format_refinement_summary(result: PipelineResult) -> str:
+    parts = [f"iter {step.iter_index}: {step.verdict}" for step in result.refinement_history]
+    summary = "Refinement summary: " + " -> ".join(parts) if parts else "Refinement summary: (none)"
+    if result.ambiguous_match:
+        summary += "  [!] ambiguous match"
+    return summary
+
+
+def _render(result: PipelineResult) -> str:
     out: list[str] = []
-    out.append(f"Profile: {profile_name}")
-    out.append("-" * (len(profile_name) + 9))
+    out.append(f"Input: {result.nl_input}")
+    out.append("")
+    out.extend(_format_profile_block(result))
+    out.append("")
+    out.append(_format_refinement_summary(result))
+    out.append("")
     for index, (rec, expl) in enumerate(
         zip(result.recommendations, result.explanations), start=1
     ):
@@ -108,16 +81,24 @@ def main() -> None:
         print(USAGE, file=sys.stderr)
         sys.exit(2)
 
-    profile_name = sys.argv[1]
-    if profile_name not in BUILTIN_PROFILES:
-        print(f"Unknown profile: {profile_name!r}", file=sys.stderr)
-        print(USAGE, file=sys.stderr)
-        sys.exit(2)
-
-    profile = UserProfile.from_dict(BUILTIN_PROFILES[profile_name])
+    nl_input = sys.argv[1]
     client = _build_client()
-    result = run_pipeline(profile, llm=client)
-    print(_render(profile_name, result))
+
+    try:
+        result = run_pipeline(nl_input, llm=client)
+    except ProfileExtractionError as exc:
+        print("Could not parse the request - try rephrasing.", file=sys.stderr)
+        print(f"  reason: {exc}", file=sys.stderr)
+        sys.exit(1)
+    except Exception as exc:
+        # Catches LLM errors (network, quota, empty-stub IndexError offline)
+        # and any other pipeline failure. Online failures should be rare;
+        # offline stub mode hits this path by design.
+        print("Pipeline failed before producing recommendations.", file=sys.stderr)
+        print(f"  {exc.__class__.__name__}: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    print(_render(result))
 
 
 if __name__ == "__main__":
