@@ -1,8 +1,11 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from typing import Any
 
+from src.agents.critic import critique
 from src.agents.explainer import Explanation, explain_recommendations
+from src.agents.profile_extractor import extract_profile
 from src.kb.retriever import RetrievedContext, retrieve_for_recommendation
 from src.llm.client import CachedLLMClient, LLMClient
 from src.recommender import (
@@ -15,6 +18,16 @@ from src.recommender import (
 
 
 MAX_REFINEMENT_ITERS = 2
+
+_PROFILE_FIELDS = {
+    "favorite_genre",
+    "favorite_mood",
+    "target_energy",
+    "target_tempo_bpm",
+    "target_valence",
+    "target_danceability",
+    "target_acousticness",
+}
 
 
 @dataclass
@@ -45,26 +58,76 @@ def _cache_stats(llm: LLMClient) -> dict[str, int] | None:
     return None
 
 
-def run_pipeline(
+def _apply_adjustments(profile: UserProfile, adjustments: dict[str, Any]) -> UserProfile:
+    safe = {k: v for k, v in adjustments.items() if k in _PROFILE_FIELDS}
+    if not safe:
+        return profile
+    return replace(profile, **safe)
+
+
+def _run_with_profile(
     profile: UserProfile,
+    catalog: list[Song],
+    llm: LLMClient,
+    k: int,
+) -> tuple[list[ScoredRecommendation], list[RetrievedContext], list[Explanation]]:
+    recommendations = recommend_songs(profile, catalog, k=k)
+    retrieved_contexts = [retrieve_for_recommendation(rec) for rec in recommendations]
+    explanations = explain_recommendations(profile, recommendations, retrieved_contexts, llm)
+    return recommendations, retrieved_contexts, explanations
+
+
+def run_pipeline(
+    nl_input: str,
     *,
     llm: LLMClient,
     songs: list[Song] | None = None,
     k: int = 5,
 ) -> PipelineResult:
     catalog = songs if songs is not None else load_songs()
-    recommendations = recommend_songs(profile, catalog, k=k)
-    retrieved_contexts = [retrieve_for_recommendation(rec) for rec in recommendations]
-    explanations = explain_recommendations(profile, recommendations, retrieved_contexts, llm)
+
+    extracted_profile = extract_profile(nl_input, llm)
+
+    current_profile = extracted_profile
+    refinement_history: list[RefinementStep] = []
+    final_recommendations: list[ScoredRecommendation] = []
+    last_verdict = "ok"
+
+    for iter_index in range(MAX_REFINEMENT_ITERS):
+        recommendations = recommend_songs(current_profile, catalog, k=k)
+        verdict = critique(nl_input, current_profile, recommendations, llm)
+        refinement_history.append(
+            RefinementStep(
+                iter_index=iter_index,
+                verdict=verdict.verdict,
+                top5_song_ids=[r.song.id for r in recommendations],
+                adjustments_applied=dict(verdict.adjustments) if verdict.adjustments else None,
+                reason=verdict.reason,
+            )
+        )
+        last_verdict = verdict.verdict
+        final_recommendations = recommendations
+
+        if verdict.verdict == "ok":
+            break
+        if verdict.adjustments:
+            current_profile = _apply_adjustments(current_profile, verdict.adjustments)
+
+    ambiguous_match = last_verdict == "refine"
+
+    retrieved_contexts = [retrieve_for_recommendation(rec) for rec in final_recommendations]
+    explanations = explain_recommendations(
+        current_profile, final_recommendations, retrieved_contexts, llm
+    )
 
     return PipelineResult(
-        nl_input="[Step 1: hand-crafted profile]",
-        extracted_profile=profile,
-        final_profile=profile,
-        recommendations=recommendations,
+        nl_input=nl_input,
+        extracted_profile=extracted_profile,
+        final_profile=current_profile,
+        recommendations=final_recommendations,
         retrieved_contexts=retrieved_contexts,
         explanations=explanations,
-        refinement_history=[],
-        ambiguous_match=False,
+        refinement_history=refinement_history,
+        ambiguous_match=ambiguous_match,
         cache_stats=_cache_stats(llm),
     )
