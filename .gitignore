@@ -17,3 +17,7 @@ venv/
 # Secrets and LLM cache (Step 1+ uses these)
 .env
 .llm_cache/
+
+# Eval harness artifacts (Step 3): keep the dir tracked, ignore the JSONs
+eval_results/*.json
+!eval_results/.gitkeep

@@ -45,6 +45,41 @@ Output the JSON object only.
 """
 
 
+EVAL_SELF_CRITIQUE_PROMPT = """\
+You are evaluating whether a music recommender's top-5 results match the
+listener's stated request. Read the request and the top-5 below. Decide:
+
+- Does the top-5 reasonably reflect the listener's stated intent across
+  genre, mood, energy, and tempo? It does NOT need to be perfect — small
+  mismatches are acceptable.
+
+Output ONLY a JSON object of this shape, with no surrounding prose and no
+markdown fences:
+
+  {{
+    "score": <float in [0.0, 1.0]>,
+    "pass":  <true | false>,
+    "reason": "<1-2 short sentences>"
+  }}
+
+Scoring rubric:
+- 1.0: top-5 strongly reflects every aspect of the request.
+- 0.7-0.9: most aspects match; one minor mismatch.
+- 0.4-0.6: one or two material mismatches.
+- 0.0-0.3: top-5 ignores or contradicts the request.
+
+"pass" should be true when score >= 0.6.
+
+Listener request:
+{nl_input}
+
+Top-5 (id | title | artist | genre | mood | score):
+{top5_block}
+
+Output the JSON object only.
+"""
+
+
 CRITIC_PROMPT = """\
 You evaluate whether a music recommender's top-5 results match a listener's
 stated request. Read the request, the current listener profile, and the
