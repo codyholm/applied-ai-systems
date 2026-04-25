@@ -1,6 +1,8 @@
+from __future__ import annotations
+
 import csv
-from typing import Any, List, Dict, Tuple, Optional
 from dataclasses import dataclass
+from pathlib import Path
 
 GENRE_WEIGHT = 1.5
 MOOD_WEIGHT = 2.0
@@ -11,12 +13,11 @@ VALENCE_WEIGHT = 2.0
 DANCEABILITY_WEIGHT = 1.5
 TEMPO_RANGE = 92.0
 
+DEFAULT_SONGS_CSV = Path(__file__).resolve().parent.parent / "data" / "songs.csv"
+
+
 @dataclass
 class Song:
-    """
-    Represents a song and its attributes.
-    Required by tests/test_recommender.py
-    """
     id: int
     title: str
     artist: str
@@ -28,50 +29,60 @@ class Song:
     danceability: float
     acousticness: float
 
+    @classmethod
+    def from_csv_row(cls, row: dict[str, str]) -> "Song":
+        return cls(
+            id=int(row["id"]),
+            title=row["title"],
+            artist=row["artist"],
+            genre=row["genre"],
+            mood=row["mood"],
+            energy=float(row["energy"]),
+            tempo_bpm=float(row["tempo_bpm"]),
+            valence=float(row["valence"]),
+            danceability=float(row["danceability"]),
+            acousticness=float(row["acousticness"]),
+        )
+
+
 @dataclass
 class UserProfile:
-    """
-    Represents a user's taste preferences.
-    Required by tests/test_recommender.py
-    """
     favorite_genre: str
     favorite_mood: str
     target_energy: float
-    likes_acoustic: bool
+    target_tempo_bpm: float
+    target_valence: float
+    target_danceability: float
+    target_acousticness: float
 
-class Recommender:
-    """
-    OOP implementation of the recommendation logic.
-    Required by tests/test_recommender.py
-    """
-    def __init__(self, songs: List[Song]):
-        self.songs = songs
+    @classmethod
+    def from_dict(cls, d: dict) -> "UserProfile":
+        # Plain type casts only. Clamping/validation is the Profile Extractor's
+        # job in Step 2; keeping this boundary thin on purpose.
+        return cls(
+            favorite_genre=str(d["favorite_genre"]),
+            favorite_mood=str(d["favorite_mood"]),
+            target_energy=float(d["target_energy"]),
+            target_tempo_bpm=float(d["target_tempo_bpm"]),
+            target_valence=float(d["target_valence"]),
+            target_danceability=float(d["target_danceability"]),
+            target_acousticness=float(d["target_acousticness"]),
+        )
 
-    def recommend(self, user: UserProfile, k: int = 5) -> List[Song]:
-        # TODO: Implement recommendation logic
-        return self.songs[:k]
 
-    def explain_recommendation(self, user: UserProfile, song: Song) -> str:
-        # TODO: Implement explanation logic
-        return "Explanation placeholder"
+@dataclass
+class ScoredRecommendation:
+    song: Song
+    score: float
+    reasons: list[str]
 
-def load_songs(csv_path: str) -> List[Dict]:
-    """Load songs from a CSV file into a list of dictionaries."""
-    songs: List[Dict] = []
 
-    with open(csv_path, newline="", encoding="utf-8") as csv_file:
+def load_songs(csv_path: Path | str | None = None) -> list[Song]:
+    """Load songs from a CSV file into a list of Song dataclasses."""
+    path = Path(csv_path) if csv_path is not None else DEFAULT_SONGS_CSV
+    with open(path, newline="", encoding="utf-8") as csv_file:
         reader = csv.DictReader(csv_file)
-        for row in reader:
-            row["id"] = int(row["id"])
-            row["energy"] = float(row["energy"])
-            row["tempo_bpm"] = float(row["tempo_bpm"])
-            row["valence"] = float(row["valence"])
-            row["danceability"] = float(row["danceability"])
-            row["acousticness"] = float(row["acousticness"])
-            songs.append(row)
-
-    print(f"Loaded songs: {len(songs)}")
-    return songs
+        return [Song.from_csv_row(row) for row in reader]
 
 
 def _clamp_similarity(value: float) -> float:
@@ -79,91 +90,63 @@ def _clamp_similarity(value: float) -> float:
     return max(0.0, min(value, 1.0))
 
 
-def _get_user_pref(user_prefs: Dict[str, Any], *keys: str) -> Optional[Any]:
-    """Return the first available user preference from a list of keys."""
-    for key in keys:
-        if key in user_prefs and user_prefs[key] is not None:
-            return user_prefs[key]
-    return None
-
-
-def score_song(user_prefs: Dict[str, Any], song: Dict[str, Any]) -> Tuple[float, List[str]]:
+def score_song(user: UserProfile, song: Song) -> tuple[float, list[str]]:
     """Score one song against a user's preferences and explain why."""
     score = 0.0
-    reasons: List[str] = []
+    reasons: list[str] = []
 
-    favorite_genre = _get_user_pref(user_prefs, "favorite_genre", "genre")
-    favorite_mood = _get_user_pref(user_prefs, "favorite_mood", "mood")
-    target_energy = _get_user_pref(user_prefs, "target_energy", "energy")
-    target_tempo = _get_user_pref(user_prefs, "target_tempo_bpm", "tempo_bpm")
-    target_acousticness = _get_user_pref(
-        user_prefs, "target_acousticness", "acousticness"
-    )
-    target_valence = _get_user_pref(user_prefs, "target_valence", "valence")
-    target_danceability = _get_user_pref(
-        user_prefs, "target_danceability", "danceability"
-    )
-
-    if favorite_genre == song["genre"]:
+    if user.favorite_genre == song.genre:
         score += GENRE_WEIGHT
         reasons.append(f"genre match (+{GENRE_WEIGHT:.1f})")
 
-    if favorite_mood == song["mood"]:
+    if user.favorite_mood == song.mood:
         score += MOOD_WEIGHT
         reasons.append(f"mood match (+{MOOD_WEIGHT:.1f})")
 
-    if target_energy is not None:
-        energy_similarity = _clamp_similarity(1 - abs(song["energy"] - float(target_energy)))
-        energy_points = ENERGY_WEIGHT * energy_similarity
-        score += energy_points
-        reasons.append(f"energy similarity (+{energy_points:.2f})")
+    energy_similarity = _clamp_similarity(1 - abs(song.energy - user.target_energy))
+    energy_points = ENERGY_WEIGHT * energy_similarity
+    score += energy_points
+    reasons.append(f"energy similarity (+{energy_points:.2f})")
 
-    if target_tempo is not None:
-        tempo_similarity = _clamp_similarity(
-            1 - min(abs(song["tempo_bpm"] - float(target_tempo)) / TEMPO_RANGE, 1)
-        )
-        tempo_points = TEMPO_WEIGHT * tempo_similarity
-        score += tempo_points
-        reasons.append(f"tempo similarity (+{tempo_points:.2f})")
+    tempo_similarity = _clamp_similarity(
+        1 - min(abs(song.tempo_bpm - user.target_tempo_bpm) / TEMPO_RANGE, 1)
+    )
+    tempo_points = TEMPO_WEIGHT * tempo_similarity
+    score += tempo_points
+    reasons.append(f"tempo similarity (+{tempo_points:.2f})")
 
-    if target_acousticness is None and "likes_acoustic" in user_prefs:
-        target_acousticness = 1.0 if user_prefs["likes_acoustic"] else 0.0
+    acoustic_similarity = _clamp_similarity(
+        1 - abs(song.acousticness - user.target_acousticness)
+    )
+    acoustic_points = ACOUSTIC_WEIGHT * acoustic_similarity
+    score += acoustic_points
+    reasons.append(f"acousticness similarity (+{acoustic_points:.2f})")
 
-    if target_acousticness is not None:
-        acoustic_similarity = _clamp_similarity(
-            1 - abs(song["acousticness"] - float(target_acousticness))
-        )
-        acoustic_points = ACOUSTIC_WEIGHT * acoustic_similarity
-        score += acoustic_points
-        reasons.append(f"acousticness similarity (+{acoustic_points:.2f})")
+    valence_similarity = _clamp_similarity(
+        1 - abs(song.valence - user.target_valence)
+    )
+    valence_points = VALENCE_WEIGHT * valence_similarity
+    score += valence_points
+    reasons.append(f"valence similarity (+{valence_points:.2f})")
 
-    if target_valence is not None:
-        valence_similarity = _clamp_similarity(
-            1 - abs(song["valence"] - float(target_valence))
-        )
-        valence_points = VALENCE_WEIGHT * valence_similarity
-        score += valence_points
-        reasons.append(f"valence similarity (+{valence_points:.2f})")
-
-    if target_danceability is not None:
-        danceability_similarity = _clamp_similarity(
-            1 - abs(song["danceability"] - float(target_danceability))
-        )
-        danceability_points = DANCEABILITY_WEIGHT * danceability_similarity
-        score += danceability_points
-        reasons.append(f"danceability similarity (+{danceability_points:.2f})")
+    danceability_similarity = _clamp_similarity(
+        1 - abs(song.danceability - user.target_danceability)
+    )
+    danceability_points = DANCEABILITY_WEIGHT * danceability_similarity
+    score += danceability_points
+    reasons.append(f"danceability similarity (+{danceability_points:.2f})")
 
     return score, reasons
 
 
-def recommend_songs(user_prefs: Dict, songs: List[Dict], k: int = 5) -> List[Tuple[Dict, float, str]]:
-    """Rank all songs for a user and return the top recommendations."""
-    scored_songs: List[Tuple[Dict, float, str]] = []
-
+def recommend_songs(
+    user: UserProfile, songs: list[Song], k: int = 5
+) -> list[ScoredRecommendation]:
+    """Rank all songs for a user and return the top-k recommendations."""
+    scored: list[ScoredRecommendation] = []
     for song in songs:
-        score, reasons = score_song(user_prefs, song)
-        explanation = ", ".join(reasons)
-        scored_songs.append((song, score, explanation))
+        score, reasons = score_song(user, song)
+        scored.append(ScoredRecommendation(song=song, score=score, reasons=reasons))
 
-    ranked_songs = sorted(scored_songs, key=lambda item: item[1], reverse=True)
-    return ranked_songs[:k]
+    scored.sort(key=lambda rec: rec.score, reverse=True)
+    return scored[:k]
