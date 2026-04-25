@@ -17,3 +17,15 @@ id,title,artist,genre,mood,energy,tempo_bpm,valence,danceability,acousticness
 16,Backseat Freestyle,Meter North,hip hop,intense,0.81,104,0.66,0.87,0.09
 17,Summer Polaroid,The Daydreams,pop,upbeat,0.84,122,0.88,0.86,0.20
 18,Quiet Exit,Paper House,indie pop,melancholy,0.41,88,0.46,0.52,0.58
+19,Static Waves,Voltline,rock,intense,0.86,144,0.40,0.63,0.14
+20,Lighthouse Hum,Granite Echo,rock,moody,0.62,96,0.38,0.55,0.31
+21,Glacial Hours,Orbit Bloom,ambient,relaxed,0.20,58,0.55,0.33,0.94
+22,Drift Beacons,Pale Aurora,ambient,focused,0.30,64,0.50,0.36,0.88
+23,Velvet Booth,Slow Stereo,jazz,chill,0.34,84,0.64,0.51,0.84
+24,Late Set,Brass Window,jazz,moody,0.45,92,0.40,0.58,0.78
+25,Highway Glare,Neon Echo,synthwave,intense,0.86,128,0.55,0.80,0.16
+26,Pixel Sunset,Vector Bloom,synthwave,upbeat,0.78,116,0.72,0.78,0.18
+27,Backyard Sparrows,June Maple,acoustic,happy,0.34,84,0.78,0.42,0.93
+28,Late Bus Notes,Meter North,hip hop,chill,0.55,88,0.52,0.78,0.25
+29,Festival Tape,Indigo Parade,indie pop,upbeat,0.78,120,0.83,0.81,0.32
+30,Glass Tunnel,Glass Harbor,electronic,focused,0.62,112,0.55,0.73,0.22
