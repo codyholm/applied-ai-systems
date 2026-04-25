@@ -40,7 +40,7 @@ def _is_online(client: LLMClient) -> bool:
     return isinstance(client, CachedLLMClient)
 
 
-def _render_sidebar(client: LLMClient) -> None:
+def _render_sidebar(client: LLMClient) -> bool:
     st.sidebar.markdown("## Status")
     if _is_online(client):
         st.sidebar.success("Connected to Gemini")
@@ -50,6 +50,8 @@ def _render_sidebar(client: LLMClient) -> None:
         st.sidebar.markdown(
             f"**Cache:** {client.hits} hits / {client.misses} misses (this session)"
         )
+    st.sidebar.divider()
+    return st.sidebar.checkbox("Show debug pane", value=False, key="show_debug")
 
 
 def _render_card(rec, expl) -> None:
@@ -78,11 +80,73 @@ def _render_results(result: PipelineResult) -> None:
         _render_card(rec, expl)
 
 
+def _render_debug(result: PipelineResult) -> None:
+    st.divider()
+    st.markdown("## Debug")
+
+    st.markdown("### Extracted profile")
+    p = result.extracted_profile
+    profile_row = {
+        "favorite_genre": [p.favorite_genre],
+        "favorite_mood": [p.favorite_mood],
+        "target_energy": [p.target_energy],
+        "target_tempo_bpm": [p.target_tempo_bpm],
+        "target_valence": [p.target_valence],
+        "target_danceability": [p.target_danceability],
+        "target_acousticness": [p.target_acousticness],
+    }
+    st.dataframe(profile_row, use_container_width=True, hide_index=True)
+
+    if result.final_profile != result.extracted_profile:
+        st.markdown("### Final profile (after critic refinement)")
+        f = result.final_profile
+        final_row = {
+            "favorite_genre": [f.favorite_genre],
+            "favorite_mood": [f.favorite_mood],
+            "target_energy": [f.target_energy],
+            "target_tempo_bpm": [f.target_tempo_bpm],
+            "target_valence": [f.target_valence],
+            "target_danceability": [f.target_danceability],
+            "target_acousticness": [f.target_acousticness],
+        }
+        st.dataframe(final_row, use_container_width=True, hide_index=True)
+
+    st.markdown("### Refinement history")
+    if result.refinement_history:
+        history_rows = [
+            {
+                "iter": s.iter_index,
+                "verdict": s.verdict,
+                "top5_song_ids": ", ".join(str(i) for i in s.top5_song_ids),
+                "adjustments": str(s.adjustments_applied or {}),
+                "reason": s.reason,
+            }
+            for s in result.refinement_history
+        ]
+        st.dataframe(history_rows, use_container_width=True, hide_index=True)
+    else:
+        st.write("(none)")
+
+    cols = st.columns(2)
+    cols[0].markdown("### Ambiguous match")
+    cols[0].markdown(
+        "**Yes**" if result.ambiguous_match else "No"
+    )
+    cols[1].markdown("### Cache stats (this run)")
+    if result.cache_stats:
+        cols[1].markdown(
+            f"**{result.cache_stats.get('hits', 0)} hits** / "
+            f"**{result.cache_stats.get('misses', 0)} misses**"
+        )
+    else:
+        cols[1].markdown("(stub mode - no cache)")
+
+
 def main() -> None:
     st.set_page_config(page_title="Music Recommender", layout="wide")
 
     client = _get_client()
-    _render_sidebar(client)
+    show_debug = _render_sidebar(client)
 
     st.title("Music Recommender")
     st.caption(
@@ -120,6 +184,8 @@ def main() -> None:
     last_result = st.session_state.get("last_result")
     if last_result is not None:
         _render_results(last_result)
+        if show_debug:
+            _render_debug(last_result)
 
 
 main()
