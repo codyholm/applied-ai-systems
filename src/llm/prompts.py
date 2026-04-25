@@ -101,8 +101,7 @@ overview, a mood overview, and a per-track editorial note.
 
 Write one short paragraph (2-4 sentences) per song explaining why it fits
 this listener. Ground every claim in the reference snippets — quote concrete
-details from them rather than inventing facts. Mention specific numeric or
-descriptive details from the snippets at least once per song.
+details from them rather than inventing facts.
 
 Listener profile:
 {profile_block}
@@ -111,20 +110,32 @@ Candidates and reference snippets:
 {candidates_block}
 
 Return ONLY a JSON object of the following shape, with one entry per song,
-in the same order as the candidates above. Each `cited_snippets` array must
-contain 1-3 short verbatim phrases (10-200 characters each) copied from any
-of that song's three reference snippets — no paraphrasing, no invention.
+in the same order as the candidates above.
 
 {{
   "explanations": [
     {{
       "song_id": <int>,
       "text": "<paragraph>",
-      "cited_snippets": ["<verbatim snippet>", ...]
+      "cited_snippets": ["<verbatim phrase>", ...]
     }},
     ...
   ]
 }}
+
+CRITICAL RULES FOR cited_snippets:
+
+1. Each entry MUST be an EXACT character-by-character copy of a continuous
+   substring from one of that song's three reference snippets above.
+2. Do NOT shorten, abbreviate, paraphrase, or fix grammar. Do not collapse
+   "between 60 and 90 BPM" to "60-90 BPM". Do not change "low-energy
+   listening state" to "low energy". Copy the exact characters.
+3. Choose phrases of 15-120 characters, matching original punctuation,
+   capitalisation, and spacing. Hyphens, en-dashes, and em-dashes must
+   match the original character.
+4. Provide 1-3 such phrases per song. If you cannot find at least one
+   phrase you can copy verbatim, that is a bug — re-read the snippets and
+   pick a different phrase.
 
 Output only the JSON object. Do not wrap it in markdown fences. Do not add
 prose outside the JSON.
