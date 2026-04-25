@@ -13,3 +13,7 @@ venv/
 
 # Pytest cache
 .pytest_cache/
+
+# Secrets and LLM cache (Step 1+ uses these)
+.env
+.llm_cache/
