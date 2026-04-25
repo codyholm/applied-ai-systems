@@ -4,6 +4,7 @@ import json
 import logging
 
 from src.llm.client import LLMClient
+from src.llm.parsing import strip_json_fences
 from src.llm.prompts import PROFILE_EXTRACTOR_PROMPT
 from src.recommender import UserProfile, load_songs
 
@@ -83,12 +84,12 @@ def extract_profile(nl_input: str, llm: LLMClient) -> UserProfile:
     prompt = _build_prompt(nl_input)
     raw = llm.generate(prompt)
     try:
-        payload = json.loads(raw)
+        payload = json.loads(strip_json_fences(raw))
     except json.JSONDecodeError as exc:
         log.warning("profile_extractor: first parse failed (%s); retrying once", exc)
         raw = llm.generate(_RETRY_PREAMBLE + prompt)
         try:
-            payload = json.loads(raw)
+            payload = json.loads(strip_json_fences(raw))
         except json.JSONDecodeError as exc2:
             raise ProfileExtractionError(
                 f"profile JSON failed to parse after retry: {exc2}"

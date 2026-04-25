@@ -5,6 +5,7 @@ import logging
 from dataclasses import dataclass
 
 from src.llm.client import LLMClient
+from src.llm.parsing import strip_json_fences
 from src.llm.prompts import CRITIC_PROMPT
 from src.recommender import ScoredRecommendation, UserProfile
 
@@ -100,7 +101,7 @@ def critique(
         return CriticVerdict(verdict="ok", adjustments=None, reason="llm_error")
 
     try:
-        payload = json.loads(raw)
+        payload = json.loads(strip_json_fences(raw))
     except json.JSONDecodeError as exc:
         log.warning("critic: JSON parse failed (%s); failing open to ok", exc)
         return CriticVerdict(verdict="ok", adjustments=None, reason="parse_failure")

@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 from src.kb.retriever import RetrievedContext
 from src.llm.client import LLMClient
+from src.llm.parsing import strip_json_fences
 from src.llm.prompts import EXPLAINER_PROMPT
 from src.recommender import ScoredRecommendation, UserProfile
 
@@ -85,7 +86,7 @@ def explain_recommendations(
         return _all_fallback(recs, "llm_error")
 
     try:
-        payload = json.loads(raw)
+        payload = json.loads(strip_json_fences(raw))
     except json.JSONDecodeError as exc:
         log.warning("explainer JSON parse failed: %s", exc)
         return _all_fallback(recs, "json_parse_error")
