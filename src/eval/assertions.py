@@ -52,14 +52,37 @@ def _deep_intense_rock(result: PipelineResult) -> tuple[bool, list[str]]:
 
 
 def _chill_rock(result: PipelineResult) -> tuple[bool, list[str]]:
+    """Adversarial profile per Module 3's original design.
+
+    The chill_rock profile pairs a `rock` genre label with chill / low-energy
+    / high-acoustic numeric targets. The original Module 3 model_card calls
+    this an 'adversarial profile designed to stress the scoring logic' and
+    explicitly documents that 'Chill Rock returned zero rock songs in the
+    top 5. Library Rain (lofi) ranked first.' That is the *expected*
+    behavior: the +1.5 genre bonus is supposed to lose to a coherent calm
+    cohort when every other feature disagrees.
+
+    A successful run therefore shows the numerics winning. We assert that:
+      - mean energy across top-5 is <= 0.45 (the calm side won)
+      - mean acousticness across top-5 is >= 0.55 (acoustic-leaning won)
+    Both reflect the adversarial test's documented purpose. We do NOT
+    require any rock tracks; doing so would contradict the original spec.
+    """
     failures: list[str] = []
-    rock_count = sum(1 for r in result.recommendations if r.song.genre == "rock")
-    if rock_count < 1:
-        failures.append("top-5 had 0 rock tracks (need >=1)")
-    if result.recommendations:
-        mean_energy = statistics.mean(r.song.energy for r in result.recommendations)
-        if mean_energy > 0.6:
-            failures.append(f"mean top-5 energy {mean_energy:.2f} is above 0.6")
+    if not result.recommendations:
+        return False, ["top-5 was empty"]
+    mean_energy = statistics.mean(r.song.energy for r in result.recommendations)
+    if mean_energy > 0.45:
+        failures.append(
+            f"mean top-5 energy {mean_energy:.2f} is above 0.45 — the calm "
+            f"numerics did not dominate as the adversarial profile intends"
+        )
+    mean_acoustic = statistics.mean(r.song.acousticness for r in result.recommendations)
+    if mean_acoustic < 0.55:
+        failures.append(
+            f"mean top-5 acousticness {mean_acoustic:.2f} is below 0.55 — "
+            f"acoustic-leaning did not dominate as the adversarial profile intends"
+        )
     return len(failures) == 0, failures
 
 
