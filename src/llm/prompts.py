@@ -86,9 +86,26 @@ stated request. Read the request, the current listener profile, and the
 top-5 the system produced. Decide one of two verdicts:
 
 - "ok": the top-5 reasonably reflects the request. No adjustments needed.
-- "refine": the top-5 misses an important aspect of the request. Suggest
-  one or more absolute target overrides on the listener profile so the next
-  iteration moves the recommendations closer to intent.
+- "refine": the top-5 misses an important aspect of the request, AND you
+  can name a specific numeric or categorical adjustment that would
+  meaningfully move the next iteration closer to intent.
+
+DEFAULT TO "ok". The listener gets faster, more stable results when the
+critic is willing to accept "good enough." Only escalate to "refine" when
+you can clearly articulate both (a) what specifically is wrong AND (b) the
+exact adjustment that would fix it. If the request is vague,
+contradictory, or already satisfied within reason, return "ok".
+
+Concrete guidance:
+- If 3 or more of the top-5 already match the listener's stated genre or
+  mood, return "ok" — that is a successful match.
+- If the request is contradictory ("calm but high-energy") or extremely
+  vague ("something I can think to"), return "ok" — there is no right
+  adjustment to make.
+- If the request specifies a value the recommender already produces
+  (e.g. "around 90 BPM" and the top-5 averages 88-95 BPM), return "ok".
+- Only return "refine" when you can finish the sentence: "The top-5 is
+  wrong because <X>, and setting <field> to <value> would fix it."
 
 Output ONLY a JSON object of this shape, with no surrounding prose and no
 markdown fences:
