@@ -1,0 +1,63 @@
+%% Applied AI Music Recommender — system architecture
+%% Source for assets/architecture.png. Render with:
+%%   npx -p @mermaid-js/mermaid-cli mmdc -i assets/architecture.mmd \
+%%       -o assets/architecture.png -t default -b transparent -w 1600
+flowchart TB
+    classDef llm fill:#fde68a,stroke:#b45309,stroke-width:2px,color:#1f2937
+    classDef det fill:#bfdbfe,stroke:#1e40af,stroke-width:2px,color:#1f2937
+    classDef store fill:#bbf7d0,stroke:#15803d,stroke-width:2px,color:#1f2937
+    classDef test fill:#fbcfe8,stroke:#9d174d,stroke-width:2px,color:#1f2937
+    classDef io fill:#f3f4f6,stroke:#374151,stroke-width:1px,color:#1f2937
+    classDef legend fill:#ffffff,stroke:#9ca3af,stroke-width:1px,color:#1f2937
+
+    USER(["Free-form NL request<br/><i>'mellow lofi for studying'</i>"]):::io
+
+    subgraph PIPE ["<b>run_pipeline</b> — src/pipeline.py"]
+      direction TB
+      S1["<b>Stage 1: Profile Extractor</b><br/>src/agents/profile_extractor.py<br/><i>NL → 7-dim UserProfile</i><br/>retry-once · clamping · hard-fail"]:::llm
+      S2["<b>Stage 2: Deterministic Scoring</b><br/>src/recommender.py · <b>FROZEN</b><br/>score_song / recommend_songs<br/>weights & formulas untouched"]:::det
+      S3B["<b>Stage 3b: Critic</b><br/>src/agents/critic.py<br/><i>verdict ok|refine + target shifts</i><br/>max 2 iters · fail-open on parse error"]:::llm
+      S3A["<b>Stage 3a: KB Retriever</b><br/>src/kb/retriever.py<br/><i>3 docs per rec: genre + mood + song</i><br/>exact id+name lookup"]:::det
+      S4["<b>Stage 4: Explainer</b><br/>src/agents/explainer.py<br/><i>1 batched call, citation-grounded</i><br/>whitespace-tolerant verbatim check<br/>fallback → mechanical reasons"]:::llm
+
+      S1 --> S2
+      S2 --> S3B
+      S3B -- "refine:<br/>apply target<br/>shifts" --> S2
+      S3B -- "ok / iter cap" --> S3A
+      S3A --> S4
+    end
+
+    CSV[("<b>data/songs.csv</b><br/>30 tracks · 7 dims<br/>10 genres × 3")]:::store
+    KB[("<b>Knowledge Base</b><br/>src/kb/docs/<br/>10 genres + 8 moods<br/>+ 30 song notes<br/><i>(human-authored)</i>")]:::store
+
+    OUT(["<b>PipelineResult</b><br/>Top-5 + grounded explanations<br/>(or mechanical fallback)<br/>+ refinement history<br/>+ ambiguous_match flag<br/>+ extractor_warnings"]):::io
+
+    USER --> S1
+    CSV -. "load" .-> S2
+    KB -. "retrieve" .-> S3A
+    KB -. "ground" .-> S4
+    S4 --> OUT
+
+    subgraph PRESENT ["<b>Presenters</b> — thin (no logic)"]
+      direction LR
+      CLI["src/cli.py<br/><i>python -m src.cli '...'</i>"]:::io
+      APP["app.py<br/><i>streamlit run app.py</i>"]:::io
+    end
+    OUT --> PRESENT
+
+    subgraph EVAL ["<b>Reliability Harness</b> — src/eval/harness.py"]
+      direction TB
+      CASES["<b>10 NL test cases</b><br/>src/eval/cases.py<br/>5 baseline + 5 stress<br/><i>(human-authored)</i>"]:::test
+      ASSERT["<b>Structural assertions</b><br/>src/eval/assertions.py<br/><i>per-case hand-coded rules</i>"]:::test
+      SELF["<b>LLM self-critique</b><br/><i>score 0-1, pass/fail</i>"]:::llm
+      SCARD["<b>Scorecard + JSON artifact</b><br/>eval_results/&lt;timestamp&gt;.json<br/><i>--confirm gate before any real call</i>"]:::test
+
+      CASES --> ASSERT --> SCARD
+      CASES --> SELF --> SCARD
+    end
+
+    CASES -. "feed each case<br/>through pipeline" .-> PIPE
+    PIPE -. "PipelineResult" .-> ASSERT
+    PIPE -. "PipelineResult" .-> SELF
+
+    LEGEND["<b>Legend</b><br/>🟨 LLM call (every one routes through<br/>&nbsp;&nbsp;&nbsp;LLMClient: Stub | Cached | Gemini gemma-3-27b-it)<br/>🟦 Deterministic / no LLM<br/>🟩 Data store / corpus<br/>🟪 Test or human-in-the-loop"]:::legend
