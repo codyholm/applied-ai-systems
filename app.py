@@ -84,6 +84,11 @@ def _render_debug(result: PipelineResult) -> None:
     st.divider()
     st.markdown("## Debug")
 
+    if result.extractor_warnings:
+        st.markdown("### Extractor warnings")
+        for warning in result.extractor_warnings:
+            st.warning(warning)
+
     st.markdown("### Extracted profile")
     p = result.extracted_profile
     profile_row = {

@@ -174,6 +174,7 @@ def _serialise_pipeline_result(result: PipelineResult) -> dict:
         ],
         "ambiguous_match": result.ambiguous_match,
         "cache_stats": result.cache_stats,
+        "extractor_warnings": list(result.extractor_warnings),
     }
 
 

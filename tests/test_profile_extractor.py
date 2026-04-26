@@ -41,18 +41,19 @@ class _CountingStub(LLMClient):
 def test_extract_happy_path():
     llm = _CountingStub([VALID_PROFILE_JSON])
 
-    profile = extract_profile("chill lofi for studying", llm)
+    profile, warnings = extract_profile("chill lofi for studying", llm)
 
     assert profile.favorite_genre == "lofi"
     assert profile.favorite_mood == "chill"
     assert profile.target_energy == 0.4
     assert profile.target_tempo_bpm == 78.0
+    assert warnings == []
 
 
 def test_extract_retries_once_on_parse_failure():
     llm = _CountingStub(["not json", VALID_PROFILE_JSON])
 
-    profile = extract_profile("anything", llm)
+    profile, _warnings = extract_profile("anything", llm)
 
     assert profile.favorite_genre == "lofi"
     assert len(llm.prompts) == 2
@@ -82,7 +83,7 @@ def test_extract_clamps_out_of_range_values():
     )
     llm = _CountingStub([out_of_range])
 
-    profile = extract_profile("hyperbolic input", llm)
+    profile, _warnings = extract_profile("hyperbolic input", llm)
 
     assert profile.target_energy == 1.0
     assert profile.target_tempo_bpm == 40.0
@@ -91,14 +92,18 @@ def test_extract_clamps_out_of_range_values():
     assert profile.target_acousticness == 0.0
 
 
-def test_extract_falls_back_unknown_genre(caplog):
+def test_extract_falls_back_unknown_genre_and_records_warning(caplog):
     payload = json.loads(VALID_PROFILE_JSON)
     payload["favorite_genre"] = "drum and bass"
     llm = _CountingStub([json.dumps(payload)])
 
     with caplog.at_level("WARNING"):
-        profile = extract_profile("dnb please", llm)
+        profile, warnings = extract_profile("dnb please", llm)
 
     # The fallback is the first allowed genre alphabetically.
     assert profile.favorite_genre == "acoustic"
     assert any("not in allowed list" in record.message for record in caplog.records)
+    assert len(warnings) == 1
+    assert "favorite_genre" in warnings[0]
+    assert "drum and bass" in warnings[0]
+    assert "acoustic" in warnings[0]

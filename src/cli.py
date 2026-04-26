@@ -52,6 +52,11 @@ def _render(result: PipelineResult) -> str:
     out.append("")
     out.extend(_format_profile_block(result))
     out.append("")
+    if result.extractor_warnings:
+        out.append("Extractor warnings:")
+        for warning in result.extractor_warnings:
+            out.append(f"  - {warning}")
+        out.append("")
     out.append(_format_refinement_summary(result))
     out.append("")
     for index, (rec, expl) in enumerate(

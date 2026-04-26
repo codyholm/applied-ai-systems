@@ -50,6 +50,7 @@ class PipelineResult:
     refinement_history: list[RefinementStep] = field(default_factory=list)
     ambiguous_match: bool = False
     cache_stats: dict[str, int] | None = None
+    extractor_warnings: list[str] = field(default_factory=list)
 
 
 def _cache_stats(llm: LLMClient) -> dict[str, int] | None:
@@ -65,18 +66,6 @@ def _apply_adjustments(profile: UserProfile, adjustments: dict[str, Any]) -> Use
     return replace(profile, **safe)
 
 
-def _run_with_profile(
-    profile: UserProfile,
-    catalog: list[Song],
-    llm: LLMClient,
-    k: int,
-) -> tuple[list[ScoredRecommendation], list[RetrievedContext], list[Explanation]]:
-    recommendations = recommend_songs(profile, catalog, k=k)
-    retrieved_contexts = [retrieve_for_recommendation(rec) for rec in recommendations]
-    explanations = explain_recommendations(profile, recommendations, retrieved_contexts, llm)
-    return recommendations, retrieved_contexts, explanations
-
-
 def run_pipeline(
     nl_input: str,
     *,
@@ -86,7 +75,7 @@ def run_pipeline(
 ) -> PipelineResult:
     catalog = songs if songs is not None else load_songs()
 
-    extracted_profile = extract_profile(nl_input, llm)
+    extracted_profile, extractor_warnings = extract_profile(nl_input, llm)
 
     current_profile = extracted_profile
     refinement_history: list[RefinementStep] = []
@@ -130,4 +119,5 @@ def run_pipeline(
         refinement_history=refinement_history,
         ambiguous_match=ambiguous_match,
         cache_stats=_cache_stats(llm),
+        extractor_warnings=extractor_warnings,
     )
