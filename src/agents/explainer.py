@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass
 
 from src.kb.retriever import RetrievedContext
@@ -52,6 +53,20 @@ def _format_candidates(
             f"Song snippet:\n{ctx.song.body}"
         )
     return "\n\n".join(blocks)
+
+
+_WS_RE = re.compile(r"\s+")
+
+
+def _normalize(text: str) -> str:
+    """Lowercase and collapse whitespace runs.
+
+    Matches Gemma's most common drift modes — capitalization at sentence
+    start, hyphen vs spaced word, single newlines vs single spaces — without
+    crossing the line into accepting paraphrases. The substring check still
+    rejects any rewording or paraphrasing.
+    """
+    return _WS_RE.sub(" ", text).strip().lower()
 
 
 def _all_fallback(
@@ -117,12 +132,19 @@ def explain_recommendations(
             log.warning("explainer entry cited_snippets invalid for song_id %r", sid)
             return _all_fallback(recs, "shape_invalid")
         ctx = by_id[sid]
-        haystack = (ctx.genre.body or "") + "\n" + (ctx.mood.body or "") + "\n" + (ctx.song.body or "")
+        haystack_raw = (
+            (ctx.genre.body or "")
+            + "\n"
+            + (ctx.mood.body or "")
+            + "\n"
+            + (ctx.song.body or "")
+        )
+        haystack_norm = _normalize(haystack_raw)
         for snippet in cited:
             if not isinstance(snippet, str) or not snippet.strip():
                 log.warning("explainer entry has empty snippet for song_id %r", sid)
                 return _all_fallback(recs, "shape_invalid")
-            if snippet not in haystack:
+            if _normalize(snippet) not in haystack_norm:
                 log.warning("explainer fabricated citation for song_id %r: %r", sid, snippet[:60])
                 return _all_fallback(recs, "fabricated_citation")
         results.append(

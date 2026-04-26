@@ -126,3 +126,36 @@ def test_explain_falls_back_on_fabricated_citation():
     for expl in explanations:
         assert expl.text is None
         assert expl.fallback_reason == "fabricated_citation"
+
+
+def test_explain_accepts_citations_with_case_and_whitespace_drift():
+    """Real Gemma output capitalizes and re-wraps. We accept that, not paraphrasing."""
+    recs, contexts = _build_inputs()
+    # Snippet starts with capital letter (not in source — source has lowercase mid-sentence).
+    # Snippet uses double space and an internal newline where the source has single space.
+    response = json.dumps(
+        {
+            "explanations": [
+                {
+                    "song_id": rec.song.id,
+                    "text": "Quoted phrase with some drift.",
+                    "cited_snippets": [
+                        "Lofi  sits between 60\nand 90 BPM",
+                        f"Track  Id {rec.song.id} is\nbuilt for headphones",
+                    ],
+                }
+                for rec in recs
+            ]
+        }
+    )
+    llm = StubLLMClient([response])
+
+    explanations = explain_recommendations(PROFILE, recs, contexts, llm)
+
+    assert len(explanations) == 5
+    for expl in explanations:
+        assert expl.fallback_reason is None
+        assert expl.text == "Quoted phrase with some drift."
+        # Original (unnormalized) snippet is preserved in the response so the user
+        # sees what the model actually said.
+        assert any("\n" in s or "  " in s for s in expl.cited_snippets)
