@@ -81,31 +81,43 @@ Output the JSON object only.
 
 
 CRITIC_PROMPT = """\
-You evaluate whether a music recommender's top-5 results match a listener's
-stated request. Read the request, the current listener profile, and the
-top-5 the system produced. Decide one of two verdicts:
+You evaluate whether a candidate listener profile faithfully reflects a
+listener's plain-English description of their music taste. The listener
+described themselves; an extractor produced a 7-dimension profile from
+that description. Your job is to check whether the profile's field values
+encode what the listener said.
 
-- "ok": the top-5 reasonably reflects the request. No adjustments needed.
-- "refine": the top-5 misses an important aspect of the request, AND you
-  can name a specific numeric or categorical adjustment that would
-  meaningfully move the next iteration closer to intent.
+Decide one of two verdicts:
 
-DEFAULT TO "ok". The listener gets faster, more stable results when the
-critic is willing to accept "good enough." Only escalate to "refine" when
-you can clearly articulate both (a) what specifically is wrong AND (b) the
-exact adjustment that would fix it. If the request is vague,
-contradictory, or already satisfied within reason, return "ok".
+- "ok": every field in the candidate profile is a faithful encoding of
+  what the listener said (or a defensible default for fields the listener
+  did not address).
+- "refine": at least one field clearly diverges from what the listener
+  said, AND you can name the specific corrected value that would restore
+  faithfulness.
+
+DEFAULT TO "ok". Faithfulness means matching the listener's *stated*
+preferences, not improving on them. If the listener was vague about a
+field, the extractor's default is fine. If two reasonable encodings exist
+for what the listener said, the extractor's choice is fine. Only refine
+when the candidate is plainly wrong — "the listener said 'around 90 BPM'
+but the candidate has target_tempo_bpm=120" — and you have the corrected
+value to substitute.
 
 Concrete guidance:
-- If 3 or more of the top-5 already match the listener's stated genre or
-  mood, return "ok" — that is a successful match.
-- If the request is contradictory ("calm but high-energy") or extremely
-  vague ("something I can think to"), return "ok" — there is no right
-  adjustment to make.
-- If the request specifies a value the recommender already produces
-  (e.g. "around 90 BPM" and the top-5 averages 88-95 BPM), return "ok".
-- Only return "refine" when you can finish the sentence: "The top-5 is
-  wrong because <X>, and setting <field> to <value> would fix it."
+- If the listener said "mellow", "calm", "low-energy", target_energy
+  should be in [0.20, 0.40]. Outside that range -> refine with a value
+  inside it.
+- If the listener said "fast", "driving", "upbeat", target_energy should
+  be in [0.70, 0.95].
+- If the listener named a tempo number, target_tempo_bpm should be within
+  ~10 BPM of it.
+- If the listener named a genre present in the catalog, favorite_genre
+  should match it.
+- If the listener was silent on a field (e.g. did not mention valence),
+  the extractor's chosen value is faithful by default — do not refine.
+- "ok" is the right verdict when the candidate is *good enough*; reserve
+  "refine" for plain mismatches with a specific fix.
 
 Output ONLY a JSON object of this shape, with no surrounding prose and no
 markdown fences:
@@ -126,19 +138,16 @@ markdown fences:
 
 Rules:
 - adjustments MUST be null when verdict is "ok".
-- adjustments MUST be a non-empty object when verdict is "refine"; only
-  include keys that need overriding. You MAY NOT add or modify any keys
-  outside the seven listed above.
+- adjustments MUST be a non-empty object when verdict is "refine"; include
+  ONLY the fields that need correcting, with their corrected absolute
+  values. You MAY NOT add or modify any keys outside the seven above.
 - Numeric values are absolute targets, not deltas.
 
-Listener request:
-{nl_input}
+Listener description:
+{nl_description}
 
-Current listener profile:
+Candidate profile (the extractor's current output):
 {profile_block}
-
-Current top-5 (id | title | artist | genre | mood | score):
-{top5_block}
 
 Output the JSON object only.
 """

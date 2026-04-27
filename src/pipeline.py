@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from typing import Any
 
-from src.agents.critic import critique
+from src.agents.critic import critique_extraction
 from src.agents.explainer import Explanation, explain_recommendations
 from src.agents.profile_extractor import extract_profile
 from src.kb.retriever import RetrievedContext, retrieve_for_recommendation
@@ -84,7 +84,11 @@ def run_pipeline(
 
     for iter_index in range(MAX_REFINEMENT_ITERS):
         recommendations = recommend_songs(current_profile, catalog, k=k)
-        verdict = critique(nl_input, current_profile, recommendations, llm)
+        # Transitional: the critic's signature changed in milestone 5.2 (now
+        # asks "does this profile faithfully encode the NL description?"
+        # instead of "do the top-5 match?"). The full pipeline split in 5.3
+        # will move this call out of the recommendation loop entirely.
+        verdict = critique_extraction(nl_input, current_profile, llm)
         refinement_history.append(
             RefinementStep(
                 iter_index=iter_index,

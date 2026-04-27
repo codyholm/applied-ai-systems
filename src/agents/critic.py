@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from src.llm.client import LLMClient
 from src.llm.parsing import strip_json_fences
 from src.llm.prompts import CRITIC_PROMPT
-from src.recommender import ScoredRecommendation, UserProfile
+from src.recommender import UserProfile
 
 
 log = logging.getLogger(__name__)
@@ -51,16 +51,6 @@ def _format_profile(profile: UserProfile) -> str:
     )
 
 
-def _format_top5(top_k: list[ScoredRecommendation]) -> str:
-    lines = []
-    for rec in top_k:
-        lines.append(
-            f"  {rec.song.id} | {rec.song.title} | {rec.song.artist} | "
-            f"{rec.song.genre} | {rec.song.mood} | {rec.score:.2f}"
-        )
-    return "\n".join(lines)
-
-
 def _clamp_adjustments(raw: dict) -> dict[str, float | str]:
     cleaned: dict[str, float | str] = {}
     for key, value in raw.items():
@@ -82,16 +72,31 @@ def _clamp_adjustments(raw: dict) -> dict[str, float | str]:
     return cleaned
 
 
-def critique(
-    nl_input: str,
-    profile: UserProfile,
-    top_k: list[ScoredRecommendation],
+def critique_extraction(
+    nl_description: str,
+    candidate_profile: UserProfile,
     llm: LLMClient,
 ) -> CriticVerdict:
+    """Check whether a candidate UserProfile faithfully encodes the listener's description.
+
+    Inputs:
+      - nl_description: the listener's free-form description of their taste.
+      - candidate_profile: the extractor's current proposed UserProfile.
+      - llm: an LLMClient.
+
+    Returns a CriticVerdict. verdict='ok' means the profile faithfully
+    encodes the description (no changes needed). verdict='refine' means
+    one or more fields plainly diverge from the description and the
+    `adjustments` dict carries the corrected absolute values for those
+    fields.
+
+    Failure modes (LLM error, malformed JSON, invalid verdict, refine
+    without adjustments) all degrade to 'ok' so the build pipeline never
+    blocks on a misbehaving critic.
+    """
     prompt = CRITIC_PROMPT.format(
-        nl_input=nl_input,
-        profile_block=_format_profile(profile),
-        top5_block=_format_top5(top_k),
+        nl_description=nl_description,
+        profile_block=_format_profile(candidate_profile),
     )
 
     try:
