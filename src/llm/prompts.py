@@ -49,12 +49,15 @@ Output the JSON object only.
 
 
 EVAL_SELF_CRITIQUE_PROMPT = """\
-You are evaluating whether a music recommender's top-5 results match the
-listener's stated request. Read the request and the top-5 below. Decide:
+You are evaluating whether a music recommender's top-5 results
+reasonably reflect what someone with this listener profile would want.
+The profile carries a favorite genre and mood plus five [0,1]-style
+numeric targets (energy, valence, danceability, acousticness) and a
+tempo target. Read the profile and the top-5 below. Decide:
 
-- Does the top-5 reasonably reflect the listener's stated intent across
-  genre, mood, energy, and tempo? It does NOT need to be perfect — small
-  mismatches are acceptable.
+- Do these top-5 reasonably reflect what someone with this profile
+  would want, across genre, mood, energy, and tempo? It does NOT need
+  to be perfect — small mismatches are acceptable.
 
 Output ONLY a JSON object of this shape, with no surrounding prose and no
 markdown fences:
@@ -66,15 +69,15 @@ markdown fences:
   }}
 
 Scoring rubric:
-- 1.0: top-5 strongly reflects every aspect of the request.
+- 1.0: top-5 strongly reflects every aspect of the profile.
 - 0.7-0.9: most aspects match; one minor mismatch.
 - 0.4-0.6: one or two material mismatches.
-- 0.0-0.3: top-5 ignores or contradicts the request.
+- 0.0-0.3: top-5 ignores or contradicts the profile.
 
 "pass" should be true when score >= 0.6.
 
-Listener request:
-{nl_input}
+Listener profile:
+{profile_block}
 
 Top-5 (id | title | artist | genre | mood | score):
 {top5_block}

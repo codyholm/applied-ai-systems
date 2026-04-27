@@ -1,114 +1,202 @@
-"""Eval test cases.
+"""Eval test cases for the two-pipeline architecture.
 
-Two batches:
-- BASELINE_CASES: 5 NL paraphrases of the named profiles in src/main.py.
-  Each deliberately omits exact 7-field numeric values so the extractor
-  has to map descriptive language to numbers.
-- STRESS_CASES: 5 adversarial NL inputs targeting documented failure
-  modes of the extractor or critic.
+Two collections, run independently by the eval harness:
+
+- BUILD_CASES: 10 cases (5 baseline + 5 stress) feeding the build_profile
+  pipeline. Each case carries a typed BuildInputs bundle (the listener's
+  five question-answers + free-form description) and a target_preset
+  whose neighborhood the extracted profile should land within.
+- RECOMMEND_CASES: 5 preset names. Each name is run directly through
+  the recommend pipeline; the per-preset structural rules in
+  src/eval/assertions.py validate the top-5.
+
+D39 split rationale: the previous single-pipeline harness conflated
+profile extraction quality and recommendation quality. Splitting them
+gives independently actionable signal — build-eval surfaces extractor
+faithfulness, recommend-eval surfaces RAG + scoring quality.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
+from src.pipeline import BuildInputs
+
 
 @dataclass(frozen=True)
-class EvalCase:
+class BuildCase:
+    """One build-pipeline test case.
+
+    Attributes:
+      name: short human-readable identifier (e.g. 'high_energy_pop_paraphrase').
+      inputs: the listener's BuildInputs bundle.
+      target_preset: key of the PRESET_PROFILES entry the extracted
+        profile should land in the neighborhood of.
+      tempo_tolerance_bpm: max |Δ tempo| allowed against the preset.
+      numeric_tolerance: max |Δ| allowed on the four [0,1]-valued targets
+        (energy, valence, danceability, acousticness).
+      category: 'baseline' (paraphrase of the preset's intent) or
+        'stress' (adversarial — vague, contradictory, or under-specified
+        inputs that should still land in some sensible neighborhood).
+    """
+
     name: str
-    nl_input: str
-    category: str  # "baseline" | "stress"
-    baseline_profile_name: str | None
+    inputs: BuildInputs
+    target_preset: str
+    tempo_tolerance_bpm: float = 30.0
+    numeric_tolerance: float = 0.20
+    category: str = "baseline"
 
 
-BASELINE_CASES: list[EvalCase] = [
-    EvalCase(
-        name="high_energy_pop",
-        nl_input=(
-            "I want fun, upbeat pop for a workout - high energy, "
-            "danceable, around the speed of a fast jog."
+# Note: target_preset choices for stress cases reflect the closest
+# preset under the system's defaults; stress cases CAN fail the
+# neighborhood check — that is the point. The failure is the eval signal.
+BUILD_CASES: list[BuildCase] = [
+    # ---- baseline paraphrases (5) -------------------------------------
+    BuildCase(
+        name="high_energy_pop_paraphrase",
+        inputs=BuildInputs(
+            activity="workout, fast jog",
+            feeling="upbeat and fun",
+            movement="moving and dancing",
+            instruments="doesn't matter, just energetic production",
+            genres="pop",
+            description=(
+                "Fun, upbeat pop for a workout - high energy, danceable, "
+                "around the speed of a fast jog."
+            ),
         ),
-        category="baseline",
-        baseline_profile_name="high_energy_pop",
+        target_preset="high_energy_pop",
     ),
-    EvalCase(
-        name="chill_lofi",
-        nl_input=(
-            "Quiet, mellow lofi to focus on writing - slow tempo, "
-            "lots of warmth, not too cheerful but not sad."
+    BuildCase(
+        name="chill_lofi_paraphrase",
+        inputs=BuildInputs(
+            activity="focused writing session",
+            feeling="quiet and calm, neutral mood",
+            movement="sitting still",
+            instruments="warm acoustic and lofi production",
+            genres="lofi",
+            description=(
+                "Quiet, mellow lofi to focus on writing - slow tempo, "
+                "lots of warmth, not too cheerful but not sad."
+            ),
         ),
-        category="baseline",
-        baseline_profile_name="chill_lofi",
+        target_preset="chill_lofi",
     ),
-    EvalCase(
-        name="deep_intense_rock",
-        nl_input=(
-            "Driving rock for cardio - intense energy, fast tempo, "
-            "distorted guitars, dark mood."
+    BuildCase(
+        name="deep_intense_rock_paraphrase",
+        inputs=BuildInputs(
+            activity="cardio workout",
+            feeling="intense and dark",
+            movement="moving fast",
+            instruments="distorted guitars, heavy production",
+            genres="rock",
+            description=(
+                "Driving rock for cardio - intense energy, fast tempo, "
+                "distorted guitars, dark mood."
+            ),
         ),
-        category="baseline",
-        baseline_profile_name="deep_intense_rock",
+        target_preset="deep_intense_rock",
     ),
-    EvalCase(
-        name="chill_rock",
-        nl_input=(
-            "Mellow rock for a slow Sunday morning - soft, low-energy, "
-            "acoustic-leaning, calm pace."
+    BuildCase(
+        name="chill_rock_paraphrase",
+        inputs=BuildInputs(
+            activity="slow Sunday morning, light reading",
+            feeling="calm and gentle",
+            movement="sitting still",
+            instruments="acoustic-leaning, soft production",
+            genres="rock",
+            description=(
+                "Mellow rock for a slow Sunday morning - soft, "
+                "low-energy, acoustic-leaning, calm pace."
+            ),
         ),
-        category="baseline",
-        baseline_profile_name="chill_rock",
+        target_preset="chill_rock",
     ),
-    EvalCase(
-        name="boundary_maximalist",
-        nl_input=(
-            "Push everything to the edge - fastest, loudest, "
-            "most-electronic dance music you have, no compromise."
+    BuildCase(
+        name="boundary_maximalist_paraphrase",
+        inputs=BuildInputs(
+            activity="high-intensity dance party",
+            feeling="wild and euphoric",
+            movement="moving full out",
+            instruments="fully electronic and synthesized",
+            genres="electronic",
+            description=(
+                "Push everything to the edge - fastest, loudest, "
+                "most-electronic dance music you have, no compromise."
+            ),
         ),
-        category="baseline",
-        baseline_profile_name="boundary_maximalist",
+        target_preset="boundary_maximalist",
     ),
-]
-
-
-STRESS_CASES: list[EvalCase] = [
+    # ---- stress (5) ---------------------------------------------------
     # Vague: extractor must default to neutral midpoints without crashing.
-    EvalCase(
+    BuildCase(
         name="vague_request",
-        nl_input="Just give me something I can think to.",
+        inputs=BuildInputs(
+            description="Just give me something I can think to.",
+        ),
+        target_preset="chill_lofi",
         category="stress",
-        baseline_profile_name=None,
     ),
-    # Compound: must reconcile high-valence + indie-pop + acoustic-leaning.
-    EvalCase(
+    # Compound: must reconcile high valence + indie pop + acoustic.
+    BuildCase(
         name="compound_preference",
-        nl_input="Upbeat but not too poppy, kind of indie, with real instruments not synths.",
+        inputs=BuildInputs(
+            activity="casual listening",
+            feeling="upbeat but not too poppy",
+            instruments="real instruments, not synths",
+            genres="indie pop",
+            description=(
+                "Upbeat but not too poppy, kind of indie, with real "
+                "instruments not synths."
+            ),
+        ),
+        target_preset="high_energy_pop",
         category="stress",
-        baseline_profile_name=None,
     ),
-    # Contradiction: extractor will produce mid-band targets; critic
+    # Contradiction: extractor will land at mid-band targets; critic
     # MUST NOT loop forever asking for clarification.
-    EvalCase(
+    BuildCase(
         name="contradiction",
-        nl_input="Calm but high-energy, sad but fun.",
+        inputs=BuildInputs(
+            feeling="calm but high-energy, sad but fun",
+            description="Calm but high-energy, sad but fun.",
+        ),
+        target_preset="chill_lofi",
         category="stress",
-        baseline_profile_name=None,
     ),
     # Tempo-anchored: extractor must honor the explicit BPM number.
-    EvalCase(
+    BuildCase(
         name="tempo_anchored",
-        nl_input="Around 90 BPM, jazzy, late-night feel.",
+        inputs=BuildInputs(
+            activity="late-night listening",
+            feeling="smooth, jazzy, late-night",
+            genres="jazz",
+            description="Around 90 BPM, jazzy, late-night feel.",
+        ),
+        target_preset="chill_lofi",
         category="stress",
-        baseline_profile_name=None,
     ),
-    # Mood-only: minimal information; pipeline must still produce 5 results
-    # without raising or hitting the refinement cap.
-    EvalCase(
+    # Mood-only: minimal information; pipeline must still produce a
+    # profile without raising or hitting the refinement cap.
+    BuildCase(
         name="mood_only",
-        nl_input="Just sad stuff.",
+        inputs=BuildInputs(
+            feeling="sad",
+            description="Just sad stuff.",
+        ),
+        target_preset="chill_lofi",
         category="stress",
-        baseline_profile_name=None,
     ),
 ]
 
 
-ALL_CASES: list[EvalCase] = BASELINE_CASES + STRESS_CASES
+# RECOMMEND_CASES: each preset name is run directly through `recommend`.
+# Order matches PRESET_PROFILES so the scorecard reads predictably.
+RECOMMEND_CASES: list[str] = [
+    "high_energy_pop",
+    "chill_lofi",
+    "deep_intense_rock",
+    "chill_rock",
+    "boundary_maximalist",
+]

@@ -1,16 +1,19 @@
-"""Reliability eval harness (transitional shape after 5.3).
+"""Reliability eval harness for the two-pipeline architecture.
 
-Runs all 10 EvalCases by wrapping each case's nl_input into
-BuildInputs(description=...), running build_profile + recommend, then
-applying the existing structural assertions and self-critique scoring.
+Two evaluations under one --confirm-gated invocation:
 
-This is a minimal patch so `python -m src.eval.harness` keeps working
-on the post-5.3 pipeline shape. Milestone 5.5 fully restructures the
-harness into separate run_build_eval / run_recommend_eval flows.
+- run_build_eval(client) — runs each BUILD_CASE through build_profile()
+  and asserts the candidate profile lands in the target preset's
+  neighborhood (assert_build_neighborhood). Surfaces extractor warnings
+  and the ambiguous flag per case. No LLM self-critique here —
+  faithfulness is hand-coded.
+- run_recommend_eval(client) — runs recommend() against each preset
+  directly, applies assert_recommend_structural, then asks the LLM
+  self-critique whether the top-5 reasonably reflects the profile.
 
-Quota guardrail (D21): without --confirm, the harness counts uncached
-calls (best-effort upper bound) and refuses to proceed if any would be
-issued. With --confirm, the harness pays whatever cost is needed.
+Quota guardrail (D21): without --confirm, the harness counts predictable
+uncached calls (best-effort upper bound) and refuses to proceed if any
+would be issued. With --confirm, it pays whatever cost is needed.
 """
 
 from __future__ import annotations
@@ -24,12 +27,14 @@ import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from types import SimpleNamespace
 
 from dotenv import load_dotenv
 
-from src.eval.assertions import assert_structural
-from src.eval.cases import ALL_CASES, EvalCase
+from src.eval.assertions import (
+    assert_build_neighborhood,
+    assert_recommend_structural,
+)
+from src.eval.cases import BUILD_CASES, RECOMMEND_CASES, BuildCase
 from src.llm.client import (
     DEFAULT_CACHE_DIR,
     CachedLLMClient,
@@ -45,6 +50,8 @@ from src.pipeline import (
     build_profile,
     recommend,
 )
+from src.profiles import PRESET_PROFILES, load_preset
+from src.recommender import UserProfile
 
 
 log = logging.getLogger(__name__)
@@ -52,11 +59,23 @@ log = logging.getLogger(__name__)
 EVAL_RESULTS_DIR = Path(__file__).resolve().parent.parent.parent / "eval_results"
 
 
+# ---------------------------------------------------------------------------
+# Result dataclasses
+# ---------------------------------------------------------------------------
+
+
 @dataclass
-class EvalResult:
-    case: EvalCase
-    build_result: ProfileBuildResult
-    rec_result: RecommendationResult
+class BuildEvalResult:
+    case: BuildCase
+    result: ProfileBuildResult
+    passed: bool
+    failures: list[str]
+
+
+@dataclass
+class RecommendEvalResult:
+    preset_name: str
+    result: RecommendationResult
     structural_pass: bool
     structural_failures: list[str]
     self_critique_score: float
@@ -64,14 +83,20 @@ class EvalResult:
     self_critique_reason: str
 
 
-def _legacy_view(
-    build: ProfileBuildResult, rec: RecommendationResult
-) -> SimpleNamespace:
-    """Adapter exposing the attrs assert_structural expects."""
-    return SimpleNamespace(
-        recommendations=rec.recommendations,
-        ambiguous_match=build.ambiguous_match,
-        refinement_history=build.refinement_history,
+# ---------------------------------------------------------------------------
+# Self-critique (recommend-eval only)
+# ---------------------------------------------------------------------------
+
+
+def _format_profile_block(profile: UserProfile) -> str:
+    return (
+        f"  favorite_genre:       {profile.favorite_genre}\n"
+        f"  favorite_mood:        {profile.favorite_mood}\n"
+        f"  target_energy:        {profile.target_energy}\n"
+        f"  target_tempo_bpm:     {profile.target_tempo_bpm}\n"
+        f"  target_valence:       {profile.target_valence}\n"
+        f"  target_danceability:  {profile.target_danceability}\n"
+        f"  target_acousticness:  {profile.target_acousticness}"
     )
 
 
@@ -86,10 +111,10 @@ def _format_top5_block(rec: RecommendationResult) -> str:
 
 
 def _self_critique(
-    case: EvalCase, rec: RecommendationResult, llm: LLMClient
+    profile: UserProfile, rec: RecommendationResult, llm: LLMClient
 ) -> tuple[float, bool, str]:
     prompt = EVAL_SELF_CRITIQUE_PROMPT.format(
-        nl_input=case.nl_input,
+        profile_block=_format_profile_block(profile),
         top5_block=_format_top5_block(rec),
     )
     try:
@@ -123,35 +148,183 @@ def _self_critique(
     return score, pass_, reason
 
 
+# ---------------------------------------------------------------------------
+# Quota audit
+# ---------------------------------------------------------------------------
+
+
 def _hash_prompt_key(model: str, prompt: str) -> str:
     payload = json.dumps([model, None, prompt, 0.2, 1024], sort_keys=True)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def _audit_uncached_calls(cases: list[EvalCase], model: str) -> int:
-    """Best-effort audit of predictable cache misses.
+def _audit_uncached_calls(
+    build_cases: list[BuildCase], recommend_cases: list[str], model: str
+) -> int:
+    """Best-effort upper bound on uncached calls.
 
-    Audits the extractor prompt for each case (predictable from inputs)
-    plus a +1 conservative upper bound per case for the self-critique
-    call (depends on pipeline output, not predictable at audit time).
+    For each BuildCase: check the predictable extractor prompt. The
+    critic prompt depends on the extractor's output, so a +1 conservative
+    upper bound per build case is added.
+    For each recommend case: explainer + self-critique prompts depend on
+    the catalog ranking, so a +2 conservative upper bound per case.
     """
     from src.agents.profile_extractor import _build_prompt as build_extractor_prompt
 
     misses = 0
-    for case in cases:
-        ext_prompt = build_extractor_prompt(BuildInputs(description=case.nl_input))
+    for case in build_cases:
+        ext_prompt = build_extractor_prompt(case.inputs)
         ext_key = _hash_prompt_key(model, ext_prompt)
         if not (DEFAULT_CACHE_DIR / f"{ext_key}.json").exists():
             misses += 1
-        misses += 1  # self-critique upper bound
+        misses += 1  # critic upper bound
+    for _preset in recommend_cases:
+        misses += 2  # explainer + self-critique upper bound
     return misses
 
 
-def _serialise_build_result(build: ProfileBuildResult) -> dict:
+# ---------------------------------------------------------------------------
+# build-eval
+# ---------------------------------------------------------------------------
+
+
+def run_build_eval(client: LLMClient) -> list[BuildEvalResult]:
+    """Run all BUILD_CASES through build_profile and assert neighborhood."""
+    results: list[BuildEvalResult] = []
+    for case in BUILD_CASES:
+        log.info("running build case %s", case.name)
+        try:
+            build_result = build_profile(case.inputs, client)
+        except Exception as exc:
+            log.exception("build pipeline failed for case %s", case.name)
+            print(f"[build {case.name}] pipeline error: {exc}", file=sys.stderr)
+            continue
+        passed, failures = assert_build_neighborhood(case, build_result)
+        results.append(
+            BuildEvalResult(
+                case=case, result=build_result, passed=passed, failures=failures
+            )
+        )
+    return results
+
+
+# ---------------------------------------------------------------------------
+# recommend-eval
+# ---------------------------------------------------------------------------
+
+
+def run_recommend_eval(client: LLMClient) -> list[RecommendEvalResult]:
+    """Run recommend() against each preset and apply structural + self-critique."""
+    results: list[RecommendEvalResult] = []
+    for preset_name in RECOMMEND_CASES:
+        log.info("running recommend case %s", preset_name)
+        try:
+            profile = load_preset(preset_name)
+            rec_result = recommend(profile, client)
+        except Exception as exc:
+            log.exception("recommend pipeline failed for preset %s", preset_name)
+            print(f"[recommend {preset_name}] pipeline error: {exc}", file=sys.stderr)
+            continue
+        struct_pass, struct_failures = assert_recommend_structural(preset_name, rec_result)
+        score, crit_pass, crit_reason = _self_critique(profile, rec_result, client)
+        results.append(
+            RecommendEvalResult(
+                preset_name=preset_name,
+                result=rec_result,
+                structural_pass=struct_pass,
+                structural_failures=struct_failures,
+                self_critique_score=score,
+                self_critique_pass=crit_pass,
+                self_critique_reason=crit_reason,
+            )
+        )
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Scorecards
+# ---------------------------------------------------------------------------
+
+
+def _print_build_scorecard(results: list[BuildEvalResult]) -> None:
+    print("BUILD scorecard")
+    print("=" * 78)
+    header = (
+        f"{'name':<32} | {'cat':<8} | pass | iters | ambig | warns"
+    )
+    print(header)
+    print("-" * len(header))
+    for r in results:
+        status = "PASS" if r.passed else "FAIL"
+        ambig = "yes" if r.result.ambiguous_match else "no"
+        iters = len(r.result.refinement_history)
+        warns = len(r.result.extractor_warnings)
+        print(
+            f"{r.case.name:<32} | {r.case.category:<8} | "
+            f"{status:<4} | {iters:>5} | {ambig:>5} | {warns:>5}"
+        )
+    print()
+    baseline = [r for r in results if r.case.category == "baseline"]
+    baseline_pass = sum(1 for r in baseline if r.passed)
+    total_pass = sum(1 for r in results if r.passed)
+    print(
+        f"Build summary: baseline {baseline_pass}/{len(baseline)}; "
+        f"overall {total_pass}/{len(results)}"
+    )
+    # Per-case failure detail
+    failed = [r for r in results if not r.passed]
+    if failed:
+        print()
+        print("Failures (build):")
+        for r in failed:
+            print(f"  {r.case.name}:")
+            for failure in r.failures:
+                print(f"    - {failure}")
+
+
+def _print_recommend_scorecard(results: list[RecommendEvalResult]) -> None:
+    print("RECOMMEND scorecard")
+    print("=" * 78)
+    header = (
+        f"{'preset':<24} | struct | crit_score | crit_pass"
+    )
+    print(header)
+    print("-" * len(header))
+    for r in results:
+        struct = "PASS" if r.structural_pass else "FAIL"
+        crit_pass = "yes" if r.self_critique_pass else "no"
+        print(
+            f"{r.preset_name:<24} | {struct:<6} | "
+            f"{r.self_critique_score:>9.2f}  | {crit_pass}"
+        )
+    print()
+    struct_pass = sum(1 for r in results if r.structural_pass)
+    crit_total_pass = sum(1 for r in results if r.self_critique_pass)
+    print(
+        f"Recommend summary: structural {struct_pass}/{len(results)}; "
+        f"self-critique {crit_total_pass}/{len(results)} "
+        f"({100 * crit_total_pass / max(len(results), 1):.0f}%)"
+    )
+    failed = [r for r in results if not r.structural_pass]
+    if failed:
+        print()
+        print("Failures (recommend structural):")
+        for r in failed:
+            print(f"  {r.preset_name}:")
+            for failure in r.structural_failures:
+                print(f"    - {failure}")
+
+
+# ---------------------------------------------------------------------------
+# Serialisation
+# ---------------------------------------------------------------------------
+
+
+def _serialise_build_result(result: ProfileBuildResult) -> dict:
     return {
-        "inputs": dataclasses.asdict(build.inputs),
-        "extracted_profile": dataclasses.asdict(build.extracted_profile),
-        "candidate_profile": dataclasses.asdict(build.candidate_profile),
+        "inputs": dataclasses.asdict(result.inputs),
+        "extracted_profile": dataclasses.asdict(result.extracted_profile),
+        "candidate_profile": dataclasses.asdict(result.candidate_profile),
         "refinement_history": [
             {
                 "iter_index": s.iter_index,
@@ -160,17 +333,17 @@ def _serialise_build_result(build: ProfileBuildResult) -> dict:
                 "adjustments_applied": s.adjustments_applied,
                 "reason": s.reason,
             }
-            for s in build.refinement_history
+            for s in result.refinement_history
         ],
-        "ambiguous_match": build.ambiguous_match,
-        "extractor_warnings": list(build.extractor_warnings),
-        "cache_stats": build.cache_stats,
+        "ambiguous_match": result.ambiguous_match,
+        "extractor_warnings": list(result.extractor_warnings),
+        "cache_stats": result.cache_stats,
     }
 
 
-def _serialise_rec_result(rec: RecommendationResult) -> dict:
+def _serialise_rec_result(result: RecommendationResult) -> dict:
     return {
-        "profile": dataclasses.asdict(rec.profile),
+        "profile": dataclasses.asdict(result.profile),
         "recommendations": [
             {
                 "song_id": r.song.id,
@@ -181,7 +354,7 @@ def _serialise_rec_result(rec: RecommendationResult) -> dict:
                 "score": r.score,
                 "reasons": list(r.reasons),
             }
-            for r in rec.recommendations
+            for r in result.recommendations
         ],
         "explanations": [
             {
@@ -190,67 +363,64 @@ def _serialise_rec_result(rec: RecommendationResult) -> dict:
                 "cited_snippets": list(e.cited_snippets),
                 "fallback_reason": e.fallback_reason,
             }
-            for e in rec.explanations
+            for e in result.explanations
         ],
-        "cache_stats": rec.cache_stats,
+        "cache_stats": result.cache_stats,
     }
 
 
-def _serialise_eval_result(eval_result: EvalResult) -> dict:
+def _serialise_build_eval(b: BuildEvalResult) -> dict:
     return {
-        "case": dataclasses.asdict(eval_result.case),
-        "build_result": _serialise_build_result(eval_result.build_result),
-        "rec_result": _serialise_rec_result(eval_result.rec_result),
-        "structural_pass": eval_result.structural_pass,
-        "structural_failures": list(eval_result.structural_failures),
-        "self_critique_score": eval_result.self_critique_score,
-        "self_critique_pass": eval_result.self_critique_pass,
-        "self_critique_reason": eval_result.self_critique_reason,
+        "case": {
+            "name": b.case.name,
+            "category": b.case.category,
+            "target_preset": b.case.target_preset,
+            "tempo_tolerance_bpm": b.case.tempo_tolerance_bpm,
+            "numeric_tolerance": b.case.numeric_tolerance,
+            "inputs": dataclasses.asdict(b.case.inputs),
+        },
+        "result": _serialise_build_result(b.result),
+        "passed": b.passed,
+        "failures": list(b.failures),
     }
 
 
-def _print_scorecard(results: list[EvalResult]) -> None:
-    print("Eval scorecard")
-    print("=" * 78)
-    header = (
-        f"{'name':<22} | {'cat':<8} | struct | crit_score | crit_pass | iters | ambig"
-    )
-    print(header)
-    print("-" * len(header))
-    for r in results:
-        struct = "PASS" if r.structural_pass else "FAIL"
-        crit_pass = "yes" if r.self_critique_pass else "no"
-        ambig = "yes" if r.build_result.ambiguous_match else "no"
-        iters = len(r.build_result.refinement_history)
-        print(
-            f"{r.case.name:<22} | {r.case.category:<8} | "
-            f"{struct:<6} | {r.self_critique_score:>9.2f}  | "
-            f"{crit_pass:<9} | {iters:>5} | {ambig:>5}"
-        )
-    print()
-    baseline = [r for r in results if r.case.category == "baseline"]
-    baseline_pass = sum(1 for r in baseline if r.structural_pass)
-    crit_total_pass = sum(1 for r in results if r.self_critique_pass)
-    print(
-        f"Summary: structural {baseline_pass}/{len(baseline)} baseline; "
-        f"self-critique {crit_total_pass}/{len(results)} "
-        f"({100 * crit_total_pass / len(results):.0f}%)"
-    )
+def _serialise_recommend_eval(r: RecommendEvalResult) -> dict:
+    return {
+        "preset_name": r.preset_name,
+        "result": _serialise_rec_result(r.result),
+        "structural_pass": r.structural_pass,
+        "structural_failures": list(r.structural_failures),
+        "self_critique_score": r.self_critique_score,
+        "self_critique_pass": r.self_critique_pass,
+        "self_critique_reason": r.self_critique_reason,
+    }
 
 
-def _write_artifact(results: list[EvalResult]) -> Path:
+def _write_artifact(
+    build_results: list[BuildEvalResult],
+    recommend_results: list[RecommendEvalResult],
+) -> Path:
     EVAL_RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     timestamp = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H%M%SZ")
     path = EVAL_RESULTS_DIR / f"{timestamp}.json"
     payload = {
         "timestamp": timestamp,
-        "results": [_serialise_eval_result(r) for r in results],
+        "build_results": [_serialise_build_eval(b) for b in build_results],
+        "recommend_results": [_serialise_recommend_eval(r) for r in recommend_results],
     }
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     return path
 
 
-def run_harness(*, confirm: bool = False) -> list[EvalResult]:
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+
+def run_harness(
+    *, confirm: bool = False
+) -> tuple[list[BuildEvalResult], list[RecommendEvalResult]]:
     load_dotenv()
     api_key = os.getenv("GEMINI_API_KEY", "").strip()
     if not api_key:
@@ -262,48 +432,26 @@ def run_harness(*, confirm: bool = False) -> list[EvalResult]:
 
     inner = GeminiClient(api_key=api_key)
     client = CachedLLMClient(inner)
-    cases = ALL_CASES
 
     if not confirm:
-        misses = _audit_uncached_calls(cases, client.MODEL)
+        misses = _audit_uncached_calls(BUILD_CASES, RECOMMEND_CASES, client.MODEL)
         if misses > 0:
             print(
                 f"would issue ~{misses} uncached calls (upper bound); "
                 "pass --confirm to proceed"
             )
-            return []
+            return [], []
 
-    results: list[EvalResult] = []
-    for case in cases:
-        log.info("running case %s", case.name)
-        try:
-            build_result = build_profile(BuildInputs(description=case.nl_input), client)
-            rec_result = recommend(build_result.candidate_profile, client)
-        except Exception as exc:
-            log.exception("pipeline failed for case %s", case.name)
-            print(f"[case {case.name}] pipeline error: {exc}", file=sys.stderr)
-            continue
+    build_results = run_build_eval(client)
+    recommend_results = run_recommend_eval(client)
 
-        legacy_view = _legacy_view(build_result, rec_result)
-        structural_pass, structural_failures = assert_structural(case, legacy_view)
-        score, crit_pass, crit_reason = _self_critique(case, rec_result, client)
-        results.append(
-            EvalResult(
-                case=case,
-                build_result=build_result,
-                rec_result=rec_result,
-                structural_pass=structural_pass,
-                structural_failures=structural_failures,
-                self_critique_score=score,
-                self_critique_pass=crit_pass,
-                self_critique_reason=crit_reason,
-            )
-        )
+    _print_build_scorecard(build_results)
+    print()
+    _print_recommend_scorecard(recommend_results)
 
-    _print_scorecard(results)
-    artifact_path = _write_artifact(results)
+    artifact_path = _write_artifact(build_results, recommend_results)
     print(f"\nArtifact written to: {artifact_path}")
-    return results
+    return build_results, recommend_results
 
 
 def main() -> None:

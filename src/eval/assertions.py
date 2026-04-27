@@ -1,39 +1,98 @@
-"""Per-case structural assertions.
+"""Hand-coded structural assertions for the two-pipeline eval harness.
 
-Each baseline case has a hand-coded boolean rule about properties of the
-top-5. Stress cases share one rule: the system must converge gracefully
-(not flag ambiguous and not exceed the refinement cap).
+Two functions:
+
+- assert_build_neighborhood(case, result) — for each BuildCase, checks
+  that the extracted candidate profile lands in the target preset's
+  neighborhood: same favorite_genre, same favorite_mood, every numeric
+  target within tolerance.
+- assert_recommend_structural(preset_name, result) — for each preset,
+  applies the per-preset structural rule on the recommend pipeline's
+  top-5. Rules carry forward from the original Module 3 model_card with
+  the post-review corrections from commits d9fb96a (chill_rock) and
+  6accda2 (boundary_maximalist).
 """
 
 from __future__ import annotations
 
 import statistics
-from typing import Callable
+from typing import Any, Callable
 
-from typing import Any
-
-from src.eval.cases import EvalCase
-
-# Until milestone 5.5 fully restructures the eval harness around
-# RecommendationResult + ProfileBuildResult, the structural assertions
-# accept any object that exposes `recommendations`, `ambiguous_match`,
-# and `refinement_history` (a small adapter built in src/eval/harness.py).
-PipelineResult = Any  # transitional alias for legacy type hints below
+from src.eval.cases import BuildCase
+from src.pipeline import ProfileBuildResult, RecommendationResult
+from src.profiles import PRESET_PROFILES
 
 
-def _high_energy_pop(result: PipelineResult) -> tuple[bool, list[str]]:
+# ---------------------------------------------------------------------------
+# build-eval assertion
+# ---------------------------------------------------------------------------
+
+
+def assert_build_neighborhood(
+    case: BuildCase, result: ProfileBuildResult
+) -> tuple[bool, list[str]]:
+    """Check that the extracted profile lands near the target preset.
+
+    Genre and mood must match exactly (case-insensitive). Tempo must be
+    within `case.tempo_tolerance_bpm`. The four [0,1] target_* fields
+    must each be within `case.numeric_tolerance`.
+    """
+    failures: list[str] = []
+    if case.target_preset not in PRESET_PROFILES:
+        return False, [f"unknown target_preset {case.target_preset!r}"]
+
+    target = PRESET_PROFILES[case.target_preset]
+    candidate = result.candidate_profile
+
+    if candidate.favorite_genre.lower() != target.favorite_genre.lower():
+        failures.append(
+            f"favorite_genre {candidate.favorite_genre!r} != target "
+            f"{target.favorite_genre!r}"
+        )
+    if candidate.favorite_mood.lower() != target.favorite_mood.lower():
+        failures.append(
+            f"favorite_mood {candidate.favorite_mood!r} != target "
+            f"{target.favorite_mood!r}"
+        )
+
+    tempo_diff = abs(candidate.target_tempo_bpm - target.target_tempo_bpm)
+    if tempo_diff > case.tempo_tolerance_bpm:
+        failures.append(
+            f"target_tempo_bpm {candidate.target_tempo_bpm} differs from "
+            f"target {target.target_tempo_bpm} by {tempo_diff:.1f} "
+            f"(>{case.tempo_tolerance_bpm} BPM tolerance)"
+        )
+
+    for field in ("target_energy", "target_valence", "target_danceability", "target_acousticness"):
+        diff = abs(getattr(candidate, field) - getattr(target, field))
+        if diff > case.numeric_tolerance:
+            failures.append(
+                f"{field} {getattr(candidate, field):.2f} differs from "
+                f"target {getattr(target, field):.2f} by {diff:.2f} "
+                f"(>{case.numeric_tolerance:.2f} tolerance)"
+            )
+
+    return len(failures) == 0, failures
+
+
+# ---------------------------------------------------------------------------
+# recommend-eval per-preset structural rules
+# ---------------------------------------------------------------------------
+
+
+def _high_energy_pop(result: RecommendationResult) -> tuple[bool, list[str]]:
     failures: list[str] = []
     genres = [r.song.genre for r in result.recommendations]
     pop_count = sum(1 for g in genres if g == "pop")
     bad_count = sum(1 for g in genres if g in {"ambient", "lofi"})
     if pop_count < 1:
-        failures.append(f"top-5 had 0 pop tracks (need >=1)")
+        failures.append("top-5 had 0 pop tracks (need >=1)")
     if bad_count > 0:
         failures.append(f"top-5 had {bad_count} ambient/lofi tracks (need 0)")
     return len(failures) == 0, failures
 
 
-def _chill_lofi(result: PipelineResult) -> tuple[bool, list[str]]:
+def _chill_lofi(result: RecommendationResult) -> tuple[bool, list[str]]:
     failures: list[str] = []
     chill_genres = {"lofi", "ambient", "acoustic"}
     matches = sum(1 for r in result.recommendations if r.song.genre in chill_genres)
@@ -44,7 +103,7 @@ def _chill_lofi(result: PipelineResult) -> tuple[bool, list[str]]:
     return len(failures) == 0, failures
 
 
-def _deep_intense_rock(result: PipelineResult) -> tuple[bool, list[str]]:
+def _deep_intense_rock(result: RecommendationResult) -> tuple[bool, list[str]]:
     failures: list[str] = []
     rock_count = sum(1 for r in result.recommendations if r.song.genre == "rock")
     if rock_count < 1:
@@ -58,22 +117,19 @@ def _deep_intense_rock(result: PipelineResult) -> tuple[bool, list[str]]:
     return len(failures) == 0, failures
 
 
-def _chill_rock(result: PipelineResult) -> tuple[bool, list[str]]:
-    """Adversarial profile per Module 3's original design.
+def _chill_rock(result: RecommendationResult) -> tuple[bool, list[str]]:
+    """Adversarial profile per Module 3's original design (commit d9fb96a).
 
-    The chill_rock profile pairs a `rock` genre label with chill / low-energy
-    / high-acoustic numeric targets. The original Module 3 model_card calls
-    this an 'adversarial profile designed to stress the scoring logic' and
-    explicitly documents that 'Chill Rock returned zero rock songs in the
-    top 5. Library Rain (lofi) ranked first.' That is the *expected*
-    behavior: the +1.5 genre bonus is supposed to lose to a coherent calm
-    cohort when every other feature disagrees.
+    chill_rock pairs a 'rock' genre label with chill / low-energy /
+    high-acoustic numeric targets. The Module 3 model_card explicitly
+    documents 'Chill Rock returned zero rock songs in the top 5' as the
+    *expected* behavior — the +1.5 genre bonus is supposed to lose to a
+    coherent calm cohort when every other feature disagrees.
 
-    A successful run therefore shows the numerics winning. We assert that:
-      - mean energy across top-5 is <= 0.45 (the calm side won)
-      - mean acousticness across top-5 is >= 0.55 (acoustic-leaning won)
-    Both reflect the adversarial test's documented purpose. We do NOT
-    require any rock tracks; doing so would contradict the original spec.
+    A successful run shows the numerics winning:
+      - mean energy across top-5 <= 0.45
+      - mean acousticness across top-5 >= 0.55
+    We do NOT require any rock tracks; doing so would contradict spec.
     """
     failures: list[str] = []
     if not result.recommendations:
@@ -81,27 +137,23 @@ def _chill_rock(result: PipelineResult) -> tuple[bool, list[str]]:
     mean_energy = statistics.mean(r.song.energy for r in result.recommendations)
     if mean_energy > 0.45:
         failures.append(
-            f"mean top-5 energy {mean_energy:.2f} is above 0.45 — the calm "
+            f"mean top-5 energy {mean_energy:.2f} is above 0.45 - the calm "
             f"numerics did not dominate as the adversarial profile intends"
         )
     mean_acoustic = statistics.mean(r.song.acousticness for r in result.recommendations)
     if mean_acoustic < 0.55:
         failures.append(
-            f"mean top-5 acousticness {mean_acoustic:.2f} is below 0.55 — "
+            f"mean top-5 acousticness {mean_acoustic:.2f} is below 0.55 - "
             f"acoustic-leaning did not dominate as the adversarial profile intends"
         )
     return len(failures) == 0, failures
 
 
-def _boundary_maximalist(result: PipelineResult) -> tuple[bool, list[str]]:
-    """Sanity rule for an extreme profile the catalog cannot fully satisfy.
-
-    The original spec called for a 5% score plateau across the top-5. That's
-    unreachable: scoring is bimodal whenever genre and mood matches split
-    apart, which is the dominant case at extreme target values. The
-    informative invariant is weaker: the catalog should still produce a
-    coherent extreme cohort — every top-5 score positive, the bottom of the
-    top-5 within 50% of the top, and at least one high-energy track present.
+def _boundary_maximalist(result: RecommendationResult) -> tuple[bool, list[str]]:
+    """Sanity rule for an extreme profile the catalog cannot fully satisfy
+    (commit 6accda2). The original 5% score plateau was unreachable; the
+    informative invariant is weaker: every top-5 score positive, the
+    bottom score within 50% of the top, and >=1 high-energy (>=0.70) track.
     """
     failures: list[str] = []
     if not result.recommendations:
@@ -113,7 +165,7 @@ def _boundary_maximalist(result: PipelineResult) -> tuple[bool, list[str]]:
     elif bottom_score / top_score < 0.5:
         failures.append(
             f"top-5 bottom score {bottom_score:.2f} is below 50% of top score "
-            f"{top_score:.2f} — cohort is not coherent"
+            f"{top_score:.2f} - cohort is not coherent"
         )
 
     high_energy = sum(1 for r in result.recommendations if r.song.energy >= 0.7)
@@ -123,18 +175,7 @@ def _boundary_maximalist(result: PipelineResult) -> tuple[bool, list[str]]:
     return len(failures) == 0, failures
 
 
-def _stress_default(result: PipelineResult) -> tuple[bool, list[str]]:
-    failures: list[str] = []
-    if result.ambiguous_match:
-        failures.append("ambiguous_match flag is set")
-    if len(result.refinement_history) > 2:
-        failures.append(
-            f"refinement_history length {len(result.refinement_history)} exceeds 2"
-        )
-    return len(failures) == 0, failures
-
-
-BASELINE_RULES: dict[str, Callable[[PipelineResult], tuple[bool, list[str]]]] = {
+_PRESET_RULES: dict[str, Callable[[RecommendationResult], tuple[bool, list[str]]]] = {
     "high_energy_pop": _high_energy_pop,
     "chill_lofi": _chill_lofi,
     "deep_intense_rock": _deep_intense_rock,
@@ -143,14 +184,16 @@ BASELINE_RULES: dict[str, Callable[[PipelineResult], tuple[bool, list[str]]]] = 
 }
 
 
-def assert_structural(
-    case: EvalCase, result: PipelineResult
+def assert_recommend_structural(
+    preset_name: str, result: RecommendationResult
 ) -> tuple[bool, list[str]]:
-    if case.category == "baseline":
-        rule = BASELINE_RULES.get(case.baseline_profile_name or "")
-        if rule is None:
-            return False, [
-                f"no structural rule for baseline_profile_name={case.baseline_profile_name!r}"
-            ]
-        return rule(result)
-    return _stress_default(result)
+    """Apply the per-preset structural rule to a recommend result."""
+    rule = _PRESET_RULES.get(preset_name)
+    if rule is None:
+        return False, [f"no structural rule for preset {preset_name!r}"]
+    return rule(result)
+
+
+# Transitional alias kept for any callers that still import the old name.
+# Removed once nothing references it.
+PipelineResult = Any
