@@ -27,8 +27,14 @@ import datetime as dt
 import json
 import re
 from pathlib import Path
+from typing import Any
 
 from src.recommender import UserProfile
+
+
+_USER_PROFILE_FIELDS: frozenset[str] = frozenset(
+    f.name for f in dataclasses.fields(UserProfile)
+)
 
 
 PROFILES_DIR = Path(__file__).resolve().parent.parent / "profiles"
@@ -193,3 +199,40 @@ def load_preset(name: str) -> UserProfile:
             f"No preset named {name!r}; available: {sorted(PRESET_PROFILES)}"
         )
     return PRESET_PROFILES[name]
+
+
+def edit_profile_fields(name: str, **updates: Any) -> UserProfile:
+    """Apply field-level updates to a saved profile and write it back.
+
+    Loads the existing user profile via load_profile(name), applies any
+    updates whose keys match the seven UserProfile dataclass fields,
+    re-saves with overwrite=True, and returns the updated profile. The
+    save preserves the original human-readable name and refreshes the
+    created_at timestamp.
+
+    Raises ValueError (with a directive message) if `name` matches a key
+    in PRESET_PROFILES — presets are immutable per D33; the caller is
+    pointed to `build --from-preset NAME --save NEW_NAME`.
+
+    Raises ProfileNotFoundError if the profile does not exist on disk.
+    Unknown update keys raise ValueError listing the allowed fields so
+    typos do not silently no-op.
+    """
+    if name in PRESET_PROFILES:
+        raise ValueError(
+            f"{name!r} is a preset and cannot be edited in place; "
+            f"use `build --from-preset {name} --save NEW_NAME` to derive "
+            f"a new user profile from it."
+        )
+
+    unknown = set(updates) - _USER_PROFILE_FIELDS
+    if unknown:
+        raise ValueError(
+            f"Unknown profile field(s): {sorted(unknown)}; "
+            f"allowed fields are {sorted(_USER_PROFILE_FIELDS)}."
+        )
+
+    existing = load_profile(name)
+    updated = dataclasses.replace(existing, **updates)
+    save_profile(name, updated, overwrite=True)
+    return updated

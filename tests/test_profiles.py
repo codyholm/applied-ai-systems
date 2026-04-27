@@ -11,6 +11,7 @@ from src.profiles import (
     ProfileExistsError,
     ProfileNotFoundError,
     delete_profile,
+    edit_profile_fields,
     list_profiles,
     load_preset,
     load_profile,
@@ -160,3 +161,40 @@ def test_presets_match_main_module_literals():
         assert main_dict[display] == PRESET_PROFILES[slug], (
             f"Preset '{slug}' diverges from src/main.py '{display}' literal"
         )
+
+
+def test_edit_profile_fields_applies_whitelisted_updates(tmp_profiles_dir):
+    save_profile("study mode", _sample_profile())
+
+    updated = edit_profile_fields(
+        "study mode",
+        target_energy=0.55,
+        favorite_mood="happy",
+    )
+
+    assert updated.target_energy == 0.55
+    assert updated.favorite_mood == "happy"
+    # Other fields untouched.
+    assert updated.favorite_genre == "lofi"
+    assert updated.target_tempo_bpm == 78.0
+
+    # Persisted to disk and re-loadable with the same values.
+    reloaded = load_profile("study mode")
+    assert reloaded == updated
+
+
+def test_edit_profile_fields_rejects_preset_name():
+    with pytest.raises(ValueError, match="preset"):
+        edit_profile_fields("chill_lofi", target_energy=0.1)
+
+
+def test_edit_profile_fields_rejects_unknown_field(tmp_profiles_dir):
+    save_profile("study mode", _sample_profile())
+
+    with pytest.raises(ValueError, match="Unknown profile field"):
+        edit_profile_fields("study mode", target_loudness=0.5)
+
+
+def test_edit_profile_fields_raises_when_profile_missing(tmp_profiles_dir):
+    with pytest.raises(ProfileNotFoundError):
+        edit_profile_fields("never-saved", target_energy=0.5)
