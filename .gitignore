@@ -21,3 +21,7 @@ venv/
 # Eval harness artifacts (Step 3): keep the dir tracked, ignore the JSONs
 eval_results/*.json
 !eval_results/.gitkeep
+
+# User profiles (Step 5): keep the dir tracked, ignore user data
+profiles/*.json
+!profiles/.gitkeep
