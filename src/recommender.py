@@ -4,14 +4,31 @@ import csv
 from dataclasses import dataclass
 from pathlib import Path
 
-GENRE_WEIGHT = 1.5
+GENRE_WEIGHT = 3.5
 MOOD_WEIGHT = 2.0
 ENERGY_WEIGHT = 2.5
 TEMPO_WEIGHT = 2.0
 ACOUSTIC_WEIGHT = 1.5
 VALENCE_WEIGHT = 2.0
 DANCEABILITY_WEIGHT = 1.5
-TEMPO_RANGE = 92.0
+TEMPO_RANGE = 60.0
+
+# Synced from src/kb/docs/genres/*.md related_genres frontmatter.
+# KB stays authoritative for human authoring; this is a runtime copy
+# to keep the recommender free of KB import-time IO.
+GENRE_ADJACENCY: dict[str, frozenset[str]] = {
+    "acoustic":   frozenset({"jazz", "indie pop"}),
+    "ambient":    frozenset({"lofi", "electronic"}),
+    "electronic": frozenset({"synthwave", "pop", "ambient"}),
+    "hip hop":    frozenset({"lofi", "electronic"}),
+    "indie pop":  frozenset({"pop", "acoustic", "rock"}),
+    "jazz":       frozenset({"lofi", "acoustic"}),
+    "lofi":       frozenset({"ambient", "jazz", "hip hop"}),
+    "pop":        frozenset({"indie pop", "electronic", "synthwave"}),
+    "rock":       frozenset({"indie pop", "acoustic"}),
+    "synthwave":  frozenset({"electronic", "pop"}),
+}
+GENRE_ADJACENCY_FACTOR = 0.5
 
 DEFAULT_SONGS_CSV = Path(__file__).resolve().parent.parent / "data" / "songs.csv"
 
@@ -98,6 +115,10 @@ def score_song(user: UserProfile, song: Song) -> tuple[float, list[str]]:
     if user.favorite_genre == song.genre:
         score += GENRE_WEIGHT
         reasons.append(f"genre match (+{GENRE_WEIGHT:.1f})")
+    elif song.genre in GENRE_ADJACENCY.get(user.favorite_genre, frozenset()):
+        bonus = GENRE_WEIGHT * GENRE_ADJACENCY_FACTOR
+        score += bonus
+        reasons.append(f"genre adjacent (+{bonus:.2f})")
 
     if user.favorite_mood == song.mood:
         score += MOOD_WEIGHT
