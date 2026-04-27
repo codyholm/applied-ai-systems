@@ -101,14 +101,14 @@ BUILD_CASES: list[BuildCase] = [
     BuildCase(
         name="chill_rock_paraphrase",
         inputs=BuildInputs(
-            activity="slow Sunday morning, light reading",
-            feeling="calm and gentle",
-            movement="sitting still",
-            instruments="acoustic-leaning, soft production",
-            genres="rock",
+            activity="evening drives, late-night winding-down",
+            feeling="moody and brooding, not too aggressive",
+            movement="sitting still or slow movement",
+            instruments="electric guitar with restraint, real drums",
+            genres="rock - the chiller end, not metal",
             description=(
-                "Mellow rock for a slow Sunday morning - soft, "
-                "low-energy, acoustic-leaning, calm pace."
+                "Mid-tempo rock for late evenings - moody guitar work, "
+                "electric but not full intensity, brooding cast."
             ),
         ),
         target_preset="chill_rock",

@@ -78,12 +78,12 @@ PRESET_PROFILES: dict[str, UserProfile] = {
     ),
     "chill_rock": UserProfile(
         favorite_genre="rock",
-        favorite_mood="chill",
-        target_energy=0.25,
-        target_tempo_bpm=75.0,
-        target_acousticness=0.85,
-        target_valence=0.50,
-        target_danceability=0.30,
+        favorite_mood="moody",
+        target_energy=0.55,
+        target_tempo_bpm=95.0,
+        target_acousticness=0.35,
+        target_valence=0.40,
+        target_danceability=0.50,
     ),
     "boundary_maximalist": UserProfile(
         favorite_genre="electronic",

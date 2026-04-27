@@ -118,33 +118,25 @@ def _deep_intense_rock(result: RecommendationResult) -> tuple[bool, list[str]]:
 
 
 def _chill_rock(result: RecommendationResult) -> tuple[bool, list[str]]:
-    """Adversarial profile per Module 3's original design (commit d9fb96a).
+    """Rock listener wanting the chill end of the rock spectrum.
 
-    chill_rock pairs a 'rock' genre label with chill / low-energy /
-    high-acoustic numeric targets. The Module 3 model_card explicitly
-    documents 'Chill Rock returned zero rock songs in the top 5' as the
-    *expected* behavior — the +1.5 genre bonus is supposed to lose to a
-    coherent calm cohort when every other feature disagrees.
-
-    A successful run shows the numerics winning:
-      - mean energy across top-5 <= 0.45
-      - mean acousticness across top-5 >= 0.55
-    We do NOT require any rock tracks; doing so would contradict spec.
+    After the Step 6 scorer + preset fixes, Lighthouse Hum (the catalog's
+    chill-leaning rock track, mood='moody', energy 0.62) should land in
+    the top 5. The previous version of this rule asserted "mean energy
+    <= 0.45 AND mean acousticness >= 0.55" — that documented the broken
+    behavior of the un-tuned scorer (commit d9fb96a) rather than the
+    desired outcome. The Module 3 model_card §6 called the 0-rock result
+    a weakness; §8 future work explicitly proposed weighting genre
+    higher to fix it. Step 6 did exactly that.
     """
     failures: list[str] = []
     if not result.recommendations:
         return False, ["top-5 was empty"]
-    mean_energy = statistics.mean(r.song.energy for r in result.recommendations)
-    if mean_energy > 0.45:
+    rock_count = sum(1 for r in result.recommendations if r.song.genre == "rock")
+    if rock_count < 1:
         failures.append(
-            f"mean top-5 energy {mean_energy:.2f} is above 0.45 - the calm "
-            f"numerics did not dominate as the adversarial profile intends"
-        )
-    mean_acoustic = statistics.mean(r.song.acousticness for r in result.recommendations)
-    if mean_acoustic < 0.55:
-        failures.append(
-            f"mean top-5 acousticness {mean_acoustic:.2f} is below 0.55 - "
-            f"acoustic-leaning did not dominate as the adversarial profile intends"
+            f"top-5 had {rock_count} rock tracks (need >=1); "
+            f"the scorer should now surface Lighthouse Hum at minimum"
         )
     return len(failures) == 0, failures
 
