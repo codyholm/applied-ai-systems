@@ -16,7 +16,7 @@ Two functions:
 from __future__ import annotations
 
 import statistics
-from typing import Any, Callable
+from typing import Callable
 
 from src.eval.cases import BuildCase
 from src.pipeline import ProfileBuildResult, RecommendationResult
@@ -192,8 +192,3 @@ def assert_recommend_structural(
     if rule is None:
         return False, [f"no structural rule for preset {preset_name!r}"]
     return rule(result)
-
-
-# Transitional alias kept for any callers that still import the old name.
-# Removed once nothing references it.
-PipelineResult = Any
