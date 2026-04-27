@@ -374,7 +374,7 @@ def _serialise_build_eval(b: BuildEvalResult) -> dict:
         "case": {
             "name": b.case.name,
             "category": b.case.category,
-            "target_preset": b.case.target_preset,
+            "expected_profile": dataclasses.asdict(b.case.expected_profile),
             "tempo_tolerance_bpm": b.case.tempo_tolerance_bpm,
             "numeric_tolerance": b.case.numeric_tolerance,
             "inputs": dataclasses.asdict(b.case.inputs),

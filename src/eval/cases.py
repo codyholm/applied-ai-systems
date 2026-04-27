@@ -2,18 +2,22 @@
 
 Two collections, run independently by the eval harness:
 
-- BUILD_CASES: 10 cases (5 baseline + 5 stress) feeding the build_profile
-  pipeline. Each case carries a typed BuildInputs bundle (the listener's
-  five question-answers + free-form description) and a target_preset
-  whose neighborhood the extracted profile should land within.
+- BUILD_CASES: 5 cases feeding the build_profile pipeline. Each case
+  carries a typed BuildInputs bundle (the listener's five question-
+  answers + free-form description) and an expected UserProfile authored
+  by hand. The cases describe FRESH listener personas — they deliberately
+  don't paraphrase the existing presets. Build-eval verifies the build
+  pipeline can produce a profile in the neighborhood of the expected
+  ground truth from a natural-language description.
 - RECOMMEND_CASES: 5 preset names. Each name is run directly through
   the recommend pipeline; the per-preset structural rules in
-  src/eval/assertions.py validate the top-5.
+  src/eval/assertions.py validate the top-5 against the preset profile.
 
 D39 split rationale: the previous single-pipeline harness conflated
 profile extraction quality and recommendation quality. Splitting them
 gives independently actionable signal — build-eval surfaces extractor
-faithfulness, recommend-eval surfaces RAG + scoring quality.
+faithfulness on novel listener descriptions, recommend-eval surfaces
+RAG + scoring quality on the canonical presets.
 """
 
 from __future__ import annotations
@@ -21,6 +25,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from src.pipeline import BuildInputs
+from src.recommender import UserProfile
 
 
 @dataclass(frozen=True)
@@ -28,164 +33,148 @@ class BuildCase:
     """One build-pipeline test case.
 
     Attributes:
-      name: short human-readable identifier (e.g. 'high_energy_pop_paraphrase').
-      inputs: the listener's BuildInputs bundle.
-      target_preset: key of the PRESET_PROFILES entry the extracted
-        profile should land in the neighborhood of.
-      tempo_tolerance_bpm: max |Δ tempo| allowed against the preset.
+      name: short human-readable identifier (e.g. 'jazz_focus').
+      inputs: the listener's BuildInputs bundle (5 questions + description).
+      expected_profile: hand-authored ground-truth UserProfile that the
+        build pipeline should produce for this listener. Neighborhood
+        check happens against this, not against a preset.
+      tempo_tolerance_bpm: max |Δ tempo| allowed against the expected.
       numeric_tolerance: max |Δ| allowed on the four [0,1]-valued targets
         (energy, valence, danceability, acousticness).
-      category: 'baseline' (paraphrase of the preset's intent) or
-        'stress' (adversarial — vague, contradictory, or under-specified
-        inputs that should still land in some sensible neighborhood).
+      category: 'baseline' (clear listener with all fields filled) or
+        'stress' (pushes the limits — extreme values, edge-of-catalog
+        territory — without being designed to fail).
     """
 
     name: str
     inputs: BuildInputs
-    target_preset: str
+    expected_profile: UserProfile
     tempo_tolerance_bpm: float = 30.0
     numeric_tolerance: float = 0.20
     category: str = "baseline"
 
 
-# Note: target_preset choices for stress cases reflect the closest
-# preset under the system's defaults; stress cases CAN fail the
-# neighborhood check — that is the point. The failure is the eval signal.
+# Five fresh listener personas. Genres deliberately chosen to NOT
+# overlap the five preset genres (pop, lofi, rock, electronic) so
+# build-eval and recommend-eval cover different territory.
 BUILD_CASES: list[BuildCase] = [
-    # ---- baseline paraphrases (5) -------------------------------------
     BuildCase(
-        name="high_energy_pop_paraphrase",
+        name="jazz_focus",
         inputs=BuildInputs(
-            activity="workout, fast jog",
-            feeling="upbeat and fun",
-            movement="moving and dancing",
-            instruments="doesn't matter, just energetic production",
-            genres="pop",
-            description=(
-                "Fun, upbeat pop for a workout - high energy, danceable, "
-                "around the speed of a fast jog."
-            ),
-        ),
-        target_preset="high_energy_pop",
-    ),
-    BuildCase(
-        name="chill_lofi_paraphrase",
-        inputs=BuildInputs(
-            activity="focused writing session",
-            feeling="quiet and calm, neutral mood",
+            activity="late-night studying or quiet writing",
+            feeling="calm and focused, mellow",
             movement="sitting still",
-            instruments="warm acoustic and lofi production",
-            genres="lofi",
-            description=(
-                "Quiet, mellow lofi to focus on writing - slow tempo, "
-                "lots of warmth, not too cheerful but not sad."
-            ),
-        ),
-        target_preset="chill_lofi",
-    ),
-    BuildCase(
-        name="deep_intense_rock_paraphrase",
-        inputs=BuildInputs(
-            activity="cardio workout",
-            feeling="intense and dark",
-            movement="moving fast",
-            instruments="distorted guitars, heavy production",
-            genres="rock",
-            description=(
-                "Driving rock for cardio - intense energy, fast tempo, "
-                "distorted guitars, dark mood."
-            ),
-        ),
-        target_preset="deep_intense_rock",
-    ),
-    BuildCase(
-        name="chill_rock_paraphrase",
-        inputs=BuildInputs(
-            activity="evening drives, late-night winding-down",
-            feeling="moody and brooding, not too aggressive",
-            movement="sitting still or slow movement",
-            instruments="electric guitar with restraint, real drums",
-            genres="rock - the chiller end, not metal",
-            description=(
-                "Mid-tempo rock for late evenings - moody guitar work, "
-                "electric but not full intensity, brooding cast."
-            ),
-        ),
-        target_preset="chill_rock",
-    ),
-    BuildCase(
-        name="boundary_maximalist_paraphrase",
-        inputs=BuildInputs(
-            activity="high-intensity dance party",
-            feeling="wild and euphoric",
-            movement="moving full out",
-            instruments="fully electronic and synthesized",
-            genres="electronic",
-            description=(
-                "Push everything to the edge - fastest, loudest, "
-                "most-electronic dance music you have, no compromise."
-            ),
-        ),
-        target_preset="boundary_maximalist",
-    ),
-    # ---- stress (5) ---------------------------------------------------
-    # Vague: extractor must default to neutral midpoints without crashing.
-    BuildCase(
-        name="vague_request",
-        inputs=BuildInputs(
-            description="Just give me something I can think to.",
-        ),
-        target_preset="chill_lofi",
-        category="stress",
-    ),
-    # Compound: must reconcile high valence + indie pop + acoustic.
-    BuildCase(
-        name="compound_preference",
-        inputs=BuildInputs(
-            activity="casual listening",
-            feeling="upbeat but not too poppy",
-            instruments="real instruments, not synths",
-            genres="indie pop",
-            description=(
-                "Upbeat but not too poppy, kind of indie, with real "
-                "instruments not synths."
-            ),
-        ),
-        target_preset="high_energy_pop",
-        category="stress",
-    ),
-    # Contradiction: extractor will land at mid-band targets; critic
-    # MUST NOT loop forever asking for clarification.
-    BuildCase(
-        name="contradiction",
-        inputs=BuildInputs(
-            feeling="calm but high-energy, sad but fun",
-            description="Calm but high-energy, sad but fun.",
-        ),
-        target_preset="chill_lofi",
-        category="stress",
-    ),
-    # Tempo-anchored: extractor must honor the explicit BPM number.
-    BuildCase(
-        name="tempo_anchored",
-        inputs=BuildInputs(
-            activity="late-night listening",
-            feeling="smooth, jazzy, late-night",
+            instruments="real instruments — jazz quartet, warm bass",
             genres="jazz",
-            description="Around 90 BPM, jazzy, late-night feel.",
+            description=(
+                "Smooth late-night jazz for focus. Low energy but not "
+                "sad, quiet drums and warm bass, no vocals."
+            ),
         ),
-        target_preset="chill_lofi",
-        category="stress",
+        expected_profile=UserProfile(
+            favorite_genre="jazz",
+            favorite_mood="focused",
+            target_energy=0.35,
+            target_tempo_bpm=85.0,
+            target_acousticness=0.65,
+            target_valence=0.45,
+            target_danceability=0.30,
+        ),
     ),
-    # Mood-only: minimal information; pipeline must still produce a
-    # profile without raising or hitting the refinement cap.
     BuildCase(
-        name="mood_only",
+        name="hip_hop_cardio",
         inputs=BuildInputs(
-            feeling="sad",
-            description="Just sad stuff.",
+            activity="treadmill cardio, sprint intervals",
+            feeling="hyped up, ready to push hard",
+            movement="moving fast and hard",
+            instruments="heavy beats, sub bass, hip hop production",
+            genres="hip hop",
+            description=(
+                "High-energy hip hop for sprint intervals — fast tempo, "
+                "hard-hitting beats, aggressive production."
+            ),
         ),
-        target_preset="chill_lofi",
+        expected_profile=UserProfile(
+            favorite_genre="hip hop",
+            favorite_mood="intense",
+            target_energy=0.85,
+            target_tempo_bpm=140.0,
+            target_acousticness=0.10,
+            target_valence=0.60,
+            target_danceability=0.85,
+        ),
+    ),
+    BuildCase(
+        name="synthwave_drive",
+        inputs=BuildInputs(
+            activity="long evening drives on the highway",
+            feeling="nostalgic, dreamy, slightly melancholy",
+            movement="still — just driving",
+            instruments="synthesizers, retro electronic production",
+            genres="synthwave",
+            description=(
+                "Dreamy synthwave for night drives — moody, mid-tempo, "
+                "washes of analog synth, neon-lit atmosphere."
+            ),
+        ),
+        expected_profile=UserProfile(
+            favorite_genre="synthwave",
+            favorite_mood="moody",
+            target_energy=0.55,
+            target_tempo_bpm=105.0,
+            target_acousticness=0.20,
+            target_valence=0.45,
+            target_danceability=0.55,
+        ),
+    ),
+    BuildCase(
+        name="acoustic_morning",
+        inputs=BuildInputs(
+            activity="slow weekend mornings, making coffee",
+            feeling="warm and content, gentle",
+            movement="moving slowly, unhurried",
+            instruments="fingerpicked acoustic guitar, soft vocals",
+            genres="acoustic",
+            description=(
+                "Quiet acoustic for slow mornings — fingerpicked guitar, "
+                "gentle vocals, vinyl warmth, no drums."
+            ),
+        ),
+        expected_profile=UserProfile(
+            favorite_genre="acoustic",
+            favorite_mood="relaxed",
+            target_energy=0.30,
+            target_tempo_bpm=80.0,
+            target_acousticness=0.85,
+            target_valence=0.65,
+            target_danceability=0.25,
+        ),
+    ),
+    BuildCase(
+        # Pushes the limits — extremely low energy / very slow tempo /
+        # no percussion. Not designed to fail; designed to test whether
+        # the extractor honors a request at the catalog's outer edge.
+        name="ambient_meditation",
+        inputs=BuildInputs(
+            activity="meditation and deep breathing exercises",
+            feeling="tranquil, almost asleep, no thinking",
+            movement="completely still",
+            instruments="drone, atmospheric pads, no percussion at all",
+            genres="ambient",
+            description=(
+                "Very slow ambient drone for meditation — minimal, no "
+                "beat, deeply still, like floating."
+            ),
+        ),
+        expected_profile=UserProfile(
+            favorite_genre="ambient",
+            favorite_mood="chill",
+            target_energy=0.10,
+            target_tempo_bpm=60.0,
+            target_acousticness=0.50,
+            target_valence=0.40,
+            target_danceability=0.10,
+        ),
         category="stress",
     ),
 ]

@@ -20,7 +20,6 @@ from typing import Callable
 
 from src.eval.cases import BuildCase
 from src.pipeline import ProfileBuildResult, RecommendationResult
-from src.profiles import PRESET_PROFILES
 
 
 # ---------------------------------------------------------------------------
@@ -31,17 +30,14 @@ from src.profiles import PRESET_PROFILES
 def assert_build_neighborhood(
     case: BuildCase, result: ProfileBuildResult
 ) -> tuple[bool, list[str]]:
-    """Check that the extracted profile lands near the target preset.
+    """Check that the candidate profile lands near the case's expected profile.
 
     Genre and mood must match exactly (case-insensitive). Tempo must be
     within `case.tempo_tolerance_bpm`. The four [0,1] target_* fields
     must each be within `case.numeric_tolerance`.
     """
     failures: list[str] = []
-    if case.target_preset not in PRESET_PROFILES:
-        return False, [f"unknown target_preset {case.target_preset!r}"]
-
-    target = PRESET_PROFILES[case.target_preset]
+    target = case.expected_profile
     candidate = result.candidate_profile
 
     if candidate.favorite_genre.lower() != target.favorite_genre.lower():
