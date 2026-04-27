@@ -1,8 +1,12 @@
-"""Reliability eval harness.
+"""Reliability eval harness (transitional shape after 5.3).
 
-Runs all 10 EvalCases through the full pipeline, applies hand-coded
-structural assertions, asks the LLM for a self-critique score, and
-prints a scorecard plus writes a JSON artifact to eval_results/.
+Runs all 10 EvalCases by wrapping each case's nl_input into
+BuildInputs(description=...), running build_profile + recommend, then
+applying the existing structural assertions and self-critique scoring.
+
+This is a minimal patch so `python -m src.eval.harness` keeps working
+on the post-5.3 pipeline shape. Milestone 5.5 fully restructures the
+harness into separate run_build_eval / run_recommend_eval flows.
 
 Quota guardrail (D21): without --confirm, the harness counts uncached
 calls (best-effort upper bound) and refuses to proceed if any would be
@@ -18,8 +22,9 @@ import json
 import logging
 import os
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 
 from dotenv import load_dotenv
 
@@ -33,7 +38,13 @@ from src.llm.client import (
 )
 from src.llm.parsing import strip_json_fences
 from src.llm.prompts import EVAL_SELF_CRITIQUE_PROMPT
-from src.pipeline import PipelineResult, run_pipeline
+from src.pipeline import (
+    BuildInputs,
+    ProfileBuildResult,
+    RecommendationResult,
+    build_profile,
+    recommend,
+)
 
 
 log = logging.getLogger(__name__)
@@ -44,7 +55,8 @@ EVAL_RESULTS_DIR = Path(__file__).resolve().parent.parent.parent / "eval_results
 @dataclass
 class EvalResult:
     case: EvalCase
-    pipeline_result: PipelineResult
+    build_result: ProfileBuildResult
+    rec_result: RecommendationResult
     structural_pass: bool
     structural_failures: list[str]
     self_critique_score: float
@@ -52,22 +64,33 @@ class EvalResult:
     self_critique_reason: str
 
 
-def _format_top5_block(result: PipelineResult) -> str:
+def _legacy_view(
+    build: ProfileBuildResult, rec: RecommendationResult
+) -> SimpleNamespace:
+    """Adapter exposing the attrs assert_structural expects."""
+    return SimpleNamespace(
+        recommendations=rec.recommendations,
+        ambiguous_match=build.ambiguous_match,
+        refinement_history=build.refinement_history,
+    )
+
+
+def _format_top5_block(rec: RecommendationResult) -> str:
     lines = []
-    for rec in result.recommendations:
+    for r in rec.recommendations:
         lines.append(
-            f"  {rec.song.id} | {rec.song.title} | {rec.song.artist} | "
-            f"{rec.song.genre} | {rec.song.mood} | {rec.score:.2f}"
+            f"  {r.song.id} | {r.song.title} | {r.song.artist} | "
+            f"{r.song.genre} | {r.song.mood} | {r.score:.2f}"
         )
     return "\n".join(lines)
 
 
 def _self_critique(
-    case: EvalCase, result: PipelineResult, llm: LLMClient
+    case: EvalCase, rec: RecommendationResult, llm: LLMClient
 ) -> tuple[float, bool, str]:
     prompt = EVAL_SELF_CRITIQUE_PROMPT.format(
         nl_input=case.nl_input,
-        top5_block=_format_top5_block(result),
+        top5_block=_format_top5_block(rec),
     )
     try:
         raw = llm.generate(prompt)
@@ -101,46 +124,53 @@ def _self_critique(
 
 
 def _hash_prompt_key(model: str, prompt: str) -> str:
-    """Replicate CachedLLMClient._key for the default temperature/max_output.
-
-    We cannot perfectly predict the run's cache pattern (critic and explainer
-    prompts depend on already-generated content), so this is a best-effort
-    audit of the predictable extractor and self-critique calls.
-    """
     payload = json.dumps([model, None, prompt, 0.2, 1024], sort_keys=True)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def _audit_uncached_calls(cases: list[EvalCase], model: str) -> int:
-    """Best-effort audit: count predictable cache misses.
+    """Best-effort audit of predictable cache misses.
 
-    Currently audits the 10 self-critique calls (predictable from case
-    nl_input alone). Extractor calls are also predictable but use the
-    PROFILE_EXTRACTOR_PROMPT.format() output — replicate that here.
-    Critic and explainer calls are NOT predictable at audit time.
+    Audits the extractor prompt for each case (predictable from inputs)
+    plus a +1 conservative upper bound per case for the self-critique
+    call (depends on pipeline output, not predictable at audit time).
     """
     from src.agents.profile_extractor import _build_prompt as build_extractor_prompt
 
     misses = 0
     for case in cases:
-        # Predictable: extractor prompt for this case.
-        ext_prompt = build_extractor_prompt(case.nl_input)
+        ext_prompt = build_extractor_prompt(BuildInputs(description=case.nl_input))
         ext_key = _hash_prompt_key(model, ext_prompt)
         if not (DEFAULT_CACHE_DIR / f"{ext_key}.json").exists():
             misses += 1
-        # Self-critique prompt: depends on pipeline result, which we don't
-        # have at audit time. Conservative upper bound: assume a miss per case.
-        # (When the pipeline runs and produces results, the actual prompt is
-        # built and may or may not hit cache.)
-        misses += 1
+        misses += 1  # self-critique upper bound
     return misses
 
 
-def _serialise_pipeline_result(result: PipelineResult) -> dict:
+def _serialise_build_result(build: ProfileBuildResult) -> dict:
     return {
-        "nl_input": result.nl_input,
-        "extracted_profile": dataclasses.asdict(result.extracted_profile),
-        "final_profile": dataclasses.asdict(result.final_profile),
+        "inputs": dataclasses.asdict(build.inputs),
+        "extracted_profile": dataclasses.asdict(build.extracted_profile),
+        "candidate_profile": dataclasses.asdict(build.candidate_profile),
+        "refinement_history": [
+            {
+                "iter_index": s.iter_index,
+                "verdict": s.verdict,
+                "candidate_after_iter": s.candidate_after_iter,
+                "adjustments_applied": s.adjustments_applied,
+                "reason": s.reason,
+            }
+            for s in build.refinement_history
+        ],
+        "ambiguous_match": build.ambiguous_match,
+        "extractor_warnings": list(build.extractor_warnings),
+        "cache_stats": build.cache_stats,
+    }
+
+
+def _serialise_rec_result(rec: RecommendationResult) -> dict:
+    return {
+        "profile": dataclasses.asdict(rec.profile),
         "recommendations": [
             {
                 "song_id": r.song.id,
@@ -151,7 +181,7 @@ def _serialise_pipeline_result(result: PipelineResult) -> dict:
                 "score": r.score,
                 "reasons": list(r.reasons),
             }
-            for r in result.recommendations
+            for r in rec.recommendations
         ],
         "explanations": [
             {
@@ -160,28 +190,17 @@ def _serialise_pipeline_result(result: PipelineResult) -> dict:
                 "cited_snippets": list(e.cited_snippets),
                 "fallback_reason": e.fallback_reason,
             }
-            for e in result.explanations
+            for e in rec.explanations
         ],
-        "refinement_history": [
-            {
-                "iter_index": s.iter_index,
-                "verdict": s.verdict,
-                "top5_song_ids": list(s.top5_song_ids),
-                "adjustments_applied": s.adjustments_applied,
-                "reason": s.reason,
-            }
-            for s in result.refinement_history
-        ],
-        "ambiguous_match": result.ambiguous_match,
-        "cache_stats": result.cache_stats,
-        "extractor_warnings": list(result.extractor_warnings),
+        "cache_stats": rec.cache_stats,
     }
 
 
 def _serialise_eval_result(eval_result: EvalResult) -> dict:
     return {
         "case": dataclasses.asdict(eval_result.case),
-        "pipeline_result": _serialise_pipeline_result(eval_result.pipeline_result),
+        "build_result": _serialise_build_result(eval_result.build_result),
+        "rec_result": _serialise_rec_result(eval_result.rec_result),
         "structural_pass": eval_result.structural_pass,
         "structural_failures": list(eval_result.structural_failures),
         "self_critique_score": eval_result.self_critique_score,
@@ -201,8 +220,8 @@ def _print_scorecard(results: list[EvalResult]) -> None:
     for r in results:
         struct = "PASS" if r.structural_pass else "FAIL"
         crit_pass = "yes" if r.self_critique_pass else "no"
-        ambig = "yes" if r.pipeline_result.ambiguous_match else "no"
-        iters = len(r.pipeline_result.refinement_history)
+        ambig = "yes" if r.build_result.ambiguous_match else "no"
+        iters = len(r.build_result.refinement_history)
         print(
             f"{r.case.name:<22} | {r.case.category:<8} | "
             f"{struct:<6} | {r.self_critique_score:>9.2f}  | "
@@ -258,17 +277,21 @@ def run_harness(*, confirm: bool = False) -> list[EvalResult]:
     for case in cases:
         log.info("running case %s", case.name)
         try:
-            pipeline_result = run_pipeline(case.nl_input, llm=client)
+            build_result = build_profile(BuildInputs(description=case.nl_input), client)
+            rec_result = recommend(build_result.candidate_profile, client)
         except Exception as exc:
             log.exception("pipeline failed for case %s", case.name)
             print(f"[case {case.name}] pipeline error: {exc}", file=sys.stderr)
             continue
-        structural_pass, structural_failures = assert_structural(case, pipeline_result)
-        score, crit_pass, crit_reason = _self_critique(case, pipeline_result, client)
+
+        legacy_view = _legacy_view(build_result, rec_result)
+        structural_pass, structural_failures = assert_structural(case, legacy_view)
+        score, crit_pass, crit_reason = _self_critique(case, rec_result, client)
         results.append(
             EvalResult(
                 case=case,
-                pipeline_result=pipeline_result,
+                build_result=build_result,
+                rec_result=rec_result,
                 structural_pass=structural_pass,
                 structural_failures=structural_failures,
                 self_critique_score=score,

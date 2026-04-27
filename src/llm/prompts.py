@@ -9,10 +9,11 @@ Populated incrementally:
 
 
 PROFILE_EXTRACTOR_PROMPT = """\
-You translate a listener's plain-English music request into a structured
-listener profile for a deterministic recommender. Read the request below and
-output ONLY a JSON object matching this schema, with no surrounding prose
-and no markdown fences.
+You translate a listener's answers about their music taste into a structured
+listener profile for a deterministic recommender. The listener has answered
+some or all of five guided questions and may have written a free-form
+description. Read what they provided below and output ONLY a JSON object
+matching this schema, with no surrounding prose and no markdown fences.
 
 Schema:
   {{
@@ -32,14 +33,16 @@ Rules:
 - For any numeric field the listener does not explicitly imply, use a
   neutral default: energy 0.5, tempo 100, valence 0.5, danceability 0.5,
   acousticness 0.4.
+- The listener may have answered only some of the five questions; treat
+  silence on a field as "no preference" rather than as a signal.
 - Map descriptive language to numbers consistently:
     "slow" -> tempo around 65-80, "mid-tempo" -> 95-110, "fast"/"upbeat" -> 120-140.
     "mellow"/"calm" -> energy 0.25-0.4, "driving"/"hype" -> energy 0.8+.
     "sad" -> valence 0.15-0.35, "neutral" -> 0.5, "happy"/"bright" -> 0.75+.
     "acoustic"/"warm" -> acousticness 0.7+, "synthetic"/"electronic" -> 0.1-0.2.
 
-Listener request:
-{nl_input}
+{starting_from_block}Listener inputs (only the fields the listener filled are shown):
+{inputs_block}
 
 Output the JSON object only.
 """
@@ -82,10 +85,10 @@ Output the JSON object only.
 
 CRITIC_PROMPT = """\
 You evaluate whether a candidate listener profile faithfully reflects a
-listener's plain-English description of their music taste. The listener
-described themselves; an extractor produced a 7-dimension profile from
-that description. Your job is to check whether the profile's field values
-encode what the listener said.
+listener's stated preferences. The listener answered some or all of five
+guided questions and may have written a free-form description; an extractor
+produced a 7-dimension profile from that bundle. Your job is to check
+whether the profile's field values encode what the listener said.
 
 Decide one of two verdicts:
 
@@ -143,8 +146,8 @@ Rules:
   values. You MAY NOT add or modify any keys outside the seven above.
 - Numeric values are absolute targets, not deltas.
 
-Listener description:
-{nl_description}
+Listener inputs (only the fields the listener filled are shown):
+{inputs_block}
 
 Candidate profile (the extractor's current output):
 {profile_block}

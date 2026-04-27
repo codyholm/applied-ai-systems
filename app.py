@@ -1,10 +1,15 @@
-"""Streamlit single-page wrapper around run_pipeline.
+"""Streamlit single-page wrapper around build_profile + recommend.
 
 Run with:  streamlit run app.py
 
 Requires GEMINI_API_KEY in .env for grounded explanations. Without a key,
 the page renders a stub-mode warning and the pipeline will fail before
 producing recommendations (NL extraction needs an LLM).
+
+Per D35 this is a minimal patch on the existing single-textarea UI:
+the textarea text is wrapped into BuildInputs(description=...), then
+build_profile + recommend are chained. The full UI redesign that
+surfaces the five-question form is Phase 6.
 """
 
 from __future__ import annotations
@@ -16,7 +21,14 @@ from dotenv import load_dotenv
 
 from src.agents.profile_extractor import ProfileExtractionError
 from src.llm.client import CachedLLMClient, GeminiClient, LLMClient, StubLLMClient
-from src.pipeline import PipelineResult, run_pipeline
+from src.pipeline import (
+    BuildInputs,
+    EmptyBuildInputsError,
+    ProfileBuildResult,
+    RecommendationResult,
+    build_profile,
+    recommend,
+)
 
 
 SAMPLE_NL = (
@@ -54,12 +66,12 @@ def _render_sidebar(client: LLMClient) -> bool:
     return st.sidebar.checkbox("Show debug pane", value=False, key="show_debug")
 
 
-def _render_card(rec, expl) -> None:
+def _render_card(scored, expl) -> None:
     with st.container(border=True):
         cols = st.columns([4, 1])
-        cols[0].markdown(f"### {rec.song.title}")
-        cols[0].markdown(f"_{rec.song.artist}_  -  `{rec.song.genre}` / `{rec.song.mood}`")
-        cols[1].metric("score", f"{rec.score:.2f}")
+        cols[0].markdown(f"### {scored.song.title}")
+        cols[0].markdown(f"_{scored.song.artist}_  -  `{scored.song.genre}` / `{scored.song.mood}`")
+        cols[1].metric("score", f"{scored.score:.2f}")
 
         if expl.text:
             st.write(expl.text)
@@ -70,63 +82,54 @@ def _render_card(rec, expl) -> None:
             )
 
         with st.expander("Mechanical reasons"):
-            for reason in rec.reasons:
+            for reason in scored.reasons:
                 st.markdown(f"- {reason}")
 
 
-def _render_results(result: PipelineResult) -> None:
-    st.markdown(f"### Top {len(result.recommendations)} for: _{result.nl_input}_")
-    for rec, expl in zip(result.recommendations, result.explanations):
-        _render_card(rec, expl)
+def _render_results(nl_input: str, rec: RecommendationResult) -> None:
+    st.markdown(f"### Top {len(rec.recommendations)} for: _{nl_input}_")
+    for scored, expl in zip(rec.recommendations, rec.explanations):
+        _render_card(scored, expl)
 
 
-def _render_debug(result: PipelineResult) -> None:
+def _profile_row(profile) -> dict:
+    return {
+        "favorite_genre": [profile.favorite_genre],
+        "favorite_mood": [profile.favorite_mood],
+        "target_energy": [profile.target_energy],
+        "target_tempo_bpm": [profile.target_tempo_bpm],
+        "target_valence": [profile.target_valence],
+        "target_danceability": [profile.target_danceability],
+        "target_acousticness": [profile.target_acousticness],
+    }
+
+
+def _render_debug(build: ProfileBuildResult, rec: RecommendationResult) -> None:
     st.divider()
     st.markdown("## Debug")
 
-    if result.extractor_warnings:
+    if build.extractor_warnings:
         st.markdown("### Extractor warnings")
-        for warning in result.extractor_warnings:
+        for warning in build.extractor_warnings:
             st.warning(warning)
 
     st.markdown("### Extracted profile")
-    p = result.extracted_profile
-    profile_row = {
-        "favorite_genre": [p.favorite_genre],
-        "favorite_mood": [p.favorite_mood],
-        "target_energy": [p.target_energy],
-        "target_tempo_bpm": [p.target_tempo_bpm],
-        "target_valence": [p.target_valence],
-        "target_danceability": [p.target_danceability],
-        "target_acousticness": [p.target_acousticness],
-    }
-    st.dataframe(profile_row, use_container_width=True, hide_index=True)
+    st.dataframe(_profile_row(build.extracted_profile), use_container_width=True, hide_index=True)
 
-    if result.final_profile != result.extracted_profile:
-        st.markdown("### Final profile (after critic refinement)")
-        f = result.final_profile
-        final_row = {
-            "favorite_genre": [f.favorite_genre],
-            "favorite_mood": [f.favorite_mood],
-            "target_energy": [f.target_energy],
-            "target_tempo_bpm": [f.target_tempo_bpm],
-            "target_valence": [f.target_valence],
-            "target_danceability": [f.target_danceability],
-            "target_acousticness": [f.target_acousticness],
-        }
-        st.dataframe(final_row, use_container_width=True, hide_index=True)
+    if build.candidate_profile != build.extracted_profile:
+        st.markdown("### Candidate profile (after critic refinement)")
+        st.dataframe(_profile_row(build.candidate_profile), use_container_width=True, hide_index=True)
 
     st.markdown("### Refinement history")
-    if result.refinement_history:
+    if build.refinement_history:
         history_rows = [
             {
                 "iter": s.iter_index,
                 "verdict": s.verdict,
-                "top5_song_ids": ", ".join(str(i) for i in s.top5_song_ids),
                 "adjustments": str(s.adjustments_applied or {}),
                 "reason": s.reason,
             }
-            for s in result.refinement_history
+            for s in build.refinement_history
         ]
         st.dataframe(history_rows, use_container_width=True, hide_index=True)
     else:
@@ -134,14 +137,12 @@ def _render_debug(result: PipelineResult) -> None:
 
     cols = st.columns(2)
     cols[0].markdown("### Ambiguous match")
-    cols[0].markdown(
-        "**Yes**" if result.ambiguous_match else "No"
-    )
+    cols[0].markdown("**Yes**" if build.ambiguous_match else "No")
     cols[1].markdown("### Cache stats (this run)")
-    if result.cache_stats:
+    if rec.cache_stats:
         cols[1].markdown(
-            f"**{result.cache_stats.get('hits', 0)} hits** / "
-            f"**{result.cache_stats.get('misses', 0)} misses**"
+            f"**{rec.cache_stats.get('hits', 0)} hits** / "
+            f"**{rec.cache_stats.get('misses', 0)} misses**"
         )
     else:
         cols[1].markdown("(stub mode - no cache)")
@@ -155,8 +156,9 @@ def main() -> None:
 
     st.title("Music Recommender")
     st.caption(
-        "Type a free-form English request; the system extracts a profile, scores "
-        "30 songs, asks an LLM critic to validate, and produces grounded explanations."
+        "Type a free-form English request; the system builds a listener "
+        "profile from it (LLM extractor + critic), then ranks 30 songs and "
+        "produces grounded explanations against the candidate profile."
     )
 
     nl_input = st.text_area(
@@ -169,28 +171,38 @@ def main() -> None:
     if st.button("Recommend", type="primary"):
         with st.spinner("Running pipeline..."):
             try:
-                result = run_pipeline(nl_input, llm=client)
-                st.session_state["last_result"] = result
+                build = build_profile(BuildInputs(description=nl_input), client)
+                rec = recommend(build.candidate_profile, client)
+                st.session_state["last_nl_input"] = nl_input
+                st.session_state["last_build"] = build
+                st.session_state["last_rec"] = rec
                 st.session_state.pop("last_error", None)
+            except EmptyBuildInputsError as exc:
+                st.session_state["last_error"] = f"Empty input - {exc}"
+                st.session_state.pop("last_build", None)
+                st.session_state.pop("last_rec", None)
             except ProfileExtractionError as exc:
                 st.session_state["last_error"] = (
                     f"Could not parse the request - try rephrasing.\n\n{exc}"
                 )
-                st.session_state.pop("last_result", None)
+                st.session_state.pop("last_build", None)
+                st.session_state.pop("last_rec", None)
             except Exception as exc:
                 st.session_state["last_error"] = (
                     f"Pipeline failed: {exc.__class__.__name__}: {exc}"
                 )
-                st.session_state.pop("last_result", None)
+                st.session_state.pop("last_build", None)
+                st.session_state.pop("last_rec", None)
 
     if "last_error" in st.session_state:
         st.error(st.session_state["last_error"])
 
-    last_result = st.session_state.get("last_result")
-    if last_result is not None:
-        _render_results(last_result)
+    last_build = st.session_state.get("last_build")
+    last_rec = st.session_state.get("last_rec")
+    if last_build is not None and last_rec is not None:
+        _render_results(st.session_state.get("last_nl_input", ""), last_rec)
         if show_debug:
-            _render_debug(last_result)
+            _render_debug(last_build, last_rec)
 
 
 main()

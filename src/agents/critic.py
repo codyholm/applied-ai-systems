@@ -3,11 +3,15 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from src.llm.client import LLMClient
 from src.llm.parsing import strip_json_fences
 from src.llm.prompts import CRITIC_PROMPT
 from src.recommender import UserProfile
+
+if TYPE_CHECKING:
+    from src.pipeline import BuildInputs
 
 
 log = logging.getLogger(__name__)
@@ -31,12 +35,32 @@ _NUMERIC_RANGES = {
     "target_acousticness": (0.0, 1.0),
 }
 
+_INPUT_LABELS: tuple[tuple[str, str], ...] = (
+    ("activity",    "Activity (what they're doing or want this music for)"),
+    ("feeling",     "Feeling (how they want this music to make them feel)"),
+    ("movement",    "Movement (in the mood to move, sit still, or in between)"),
+    ("instruments", "Instruments (acoustic, electronic, or a mix)"),
+    ("genres",      "Genres (specifically wanted or to avoid)"),
+    ("description", "Description (free-form mood description)"),
+)
+
 
 @dataclass
 class CriticVerdict:
     verdict: str
     adjustments: dict[str, float | str] | None
     reason: str
+
+
+def _format_inputs_bundle(inputs: BuildInputs) -> str:
+    lines: list[str] = []
+    for attr, label in _INPUT_LABELS:
+        value = getattr(inputs, attr, None)
+        if value and value.strip():
+            lines.append(f"  {label}: {value.strip()}")
+    if not lines:
+        return "  (no inputs provided)"
+    return "\n".join(lines)
 
 
 def _format_profile(profile: UserProfile) -> str:
@@ -73,29 +97,28 @@ def _clamp_adjustments(raw: dict) -> dict[str, float | str]:
 
 
 def critique_extraction(
-    nl_description: str,
+    inputs: BuildInputs,
     candidate_profile: UserProfile,
     llm: LLMClient,
 ) -> CriticVerdict:
-    """Check whether a candidate UserProfile faithfully encodes the listener's description.
+    """Check whether a candidate UserProfile faithfully encodes the listener's inputs.
 
     Inputs:
-      - nl_description: the listener's free-form description of their taste.
+      - inputs: the listener's BuildInputs bundle (5 question answers + description).
       - candidate_profile: the extractor's current proposed UserProfile.
       - llm: an LLMClient.
 
     Returns a CriticVerdict. verdict='ok' means the profile faithfully
-    encodes the description (no changes needed). verdict='refine' means
-    one or more fields plainly diverge from the description and the
-    `adjustments` dict carries the corrected absolute values for those
-    fields.
+    encodes the inputs (no changes needed). verdict='refine' means one or
+    more fields plainly diverge from the inputs and the `adjustments`
+    dict carries the corrected absolute values for those fields.
 
     Failure modes (LLM error, malformed JSON, invalid verdict, refine
     without adjustments) all degrade to 'ok' so the build pipeline never
     blocks on a misbehaving critic.
     """
     prompt = CRITIC_PROMPT.format(
-        nl_description=nl_description,
+        inputs_block=_format_inputs_bundle(inputs),
         profile_block=_format_profile(candidate_profile),
     )
 

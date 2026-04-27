@@ -1,9 +1,9 @@
 """Tests for the profile-faithfulness critic.
 
-The critic's job (rewritten in milestone 5.2) is to check that an
-extracted UserProfile faithfully reflects the listener's plain-English
-description, not whether the recommender's top-5 matched intent. These
-tests drive the new question with stub LLM responses.
+The critic's job (rewritten in milestone 5.2 and re-shaped in 5.3) is to
+check that an extracted UserProfile faithfully reflects the listener's
+BuildInputs bundle, not whether the recommender's top-5 matched intent.
+These tests drive the new question with stub LLM responses.
 """
 
 from __future__ import annotations
@@ -12,6 +12,7 @@ import json
 
 from src.agents.critic import critique_extraction
 from src.llm.client import StubLLMClient
+from src.pipeline import BuildInputs
 from src.recommender import UserProfile
 
 
@@ -25,20 +26,47 @@ CANDIDATE = UserProfile(
     target_acousticness=0.8,
 )
 
+_INPUTS = BuildInputs(
+    activity="focused writing session",
+    feeling="calm and quiet",
+    description="Quiet, mellow lofi to focus on writing.",
+)
+
 
 def test_critic_returns_ok_when_profile_is_faithful():
     response = json.dumps(
-        {"verdict": "ok", "adjustments": None, "reason": "encodes description faithfully"}
+        {"verdict": "ok", "adjustments": None, "reason": "encodes inputs faithfully"}
     )
     llm = StubLLMClient([response])
 
-    result = critique_extraction(
-        "Quiet, mellow lofi to focus on writing.", CANDIDATE, llm
-    )
+    result = critique_extraction(_INPUTS, CANDIDATE, llm)
 
     assert result.verdict == "ok"
     assert result.adjustments is None
     assert "faithfully" in result.reason
+
+
+def test_critic_prompt_includes_inputs_bundle():
+    """The critic prompt receives a labeled bundle, not a single NL string."""
+
+    captured: dict[str, str] = {}
+
+    class _CapturingStub(StubLLMClient):
+        def generate(self, prompt, *, system=None, temperature=0.2, max_output_tokens=1024):
+            captured["prompt"] = prompt
+            return json.dumps({"verdict": "ok", "adjustments": None, "reason": "ok"})
+
+    llm = _CapturingStub([])
+    critique_extraction(_INPUTS, CANDIDATE, llm)
+
+    prompt = captured["prompt"]
+    assert "Activity" in prompt
+    assert "focused writing session" in prompt
+    assert "Description" in prompt
+    assert "Quiet, mellow lofi" in prompt
+    # Fields the listener didn't fill should not appear under their labels.
+    assert "Movement" not in prompt
+    assert "Genres" not in prompt
 
 
 def test_critic_returns_refine_with_corrected_absolute_values():
@@ -54,9 +82,8 @@ def test_critic_returns_refine_with_corrected_absolute_values():
     )
     llm = StubLLMClient([response])
 
-    result = critique_extraction(
-        "Around 90 BPM, jazzy, mid-tempo.", CANDIDATE, llm
-    )
+    inputs = BuildInputs(description="Around 90 BPM, jazzy, mid-tempo.")
+    result = critique_extraction(inputs, CANDIDATE, llm)
 
     assert result.verdict == "refine"
     assert result.adjustments == {"target_tempo_bpm": 90.0, "target_energy": 0.5}
@@ -66,7 +93,7 @@ def test_critic_returns_refine_with_corrected_absolute_values():
 def test_critic_parse_failure_degrades_to_ok():
     llm = StubLLMClient(["this is not json"])
 
-    result = critique_extraction("anything", CANDIDATE, llm)
+    result = critique_extraction(_INPUTS, CANDIDATE, llm)
 
     assert result.verdict == "ok"
     assert result.adjustments is None
@@ -79,7 +106,7 @@ def test_critic_refine_without_adjustments_degrades_to_ok():
     )
     llm = StubLLMClient([response])
 
-    result = critique_extraction("anything", CANDIDATE, llm)
+    result = critique_extraction(_INPUTS, CANDIDATE, llm)
 
     assert result.verdict == "ok"
     assert result.reason == "parse_failure"
@@ -90,9 +117,9 @@ def test_critic_clamps_adjustments_into_valid_ranges():
         {
             "verdict": "refine",
             "adjustments": {
-                "target_energy": 1.4,        # > 1.0 → clamp to 1.0
-                "target_tempo_bpm": 5.0,     # < 40 → clamp to 40
-                "target_valence": -0.1,      # < 0 → clamp to 0
+                "target_energy": 1.4,        # > 1.0 -> clamp to 1.0
+                "target_tempo_bpm": 5.0,     # < 40 -> clamp to 40
+                "target_valence": -0.1,      # < 0 -> clamp to 0
                 "favorite_genre": "rock",    # string passes through
             },
             "reason": "out-of-range values",
@@ -100,7 +127,8 @@ def test_critic_clamps_adjustments_into_valid_ranges():
     )
     llm = StubLLMClient([response])
 
-    result = critique_extraction("test", CANDIDATE, llm)
+    inputs = BuildInputs(description="test")
+    result = critique_extraction(inputs, CANDIDATE, llm)
 
     assert result.verdict == "refine"
     assert result.adjustments == {

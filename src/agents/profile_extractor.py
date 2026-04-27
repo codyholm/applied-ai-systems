@@ -3,11 +3,15 @@ from __future__ import annotations
 import functools
 import json
 import logging
+from typing import TYPE_CHECKING
 
 from src.llm.client import LLMClient
 from src.llm.parsing import strip_json_fences
 from src.llm.prompts import PROFILE_EXTRACTOR_PROMPT
 from src.recommender import UserProfile, load_songs
+
+if TYPE_CHECKING:
+    from src.pipeline import BuildInputs
 
 
 log = logging.getLogger(__name__)
@@ -42,10 +46,50 @@ _RETRY_PREAMBLE = (
     "conforming to the schema below.\n\n"
 )
 
+_INPUT_LABELS: tuple[tuple[str, str], ...] = (
+    ("activity",    "Activity (what they're doing or want this music for)"),
+    ("feeling",     "Feeling (how they want this music to make them feel)"),
+    ("movement",    "Movement (in the mood to move, sit still, or in between)"),
+    ("instruments", "Instruments (acoustic, electronic, or a mix)"),
+    ("genres",      "Genres (specifically wanted or to avoid)"),
+    ("description", "Description (free-form mood description)"),
+)
 
-def _build_prompt(nl_input: str) -> str:
+
+def _format_inputs_bundle(inputs: BuildInputs) -> str:
+    lines: list[str] = []
+    for attr, label in _INPUT_LABELS:
+        value = getattr(inputs, attr, None)
+        if value and value.strip():
+            lines.append(f"  {label}: {value.strip()}")
+    if not lines:
+        return "  (no inputs provided)"
+    return "\n".join(lines)
+
+
+def _format_starting_from(profile: UserProfile | None) -> str:
+    if profile is None:
+        return ""
+    return (
+        "An existing profile is provided as a seed; treat it as the starting\n"
+        "point and only modify fields the new inputs clearly change.\n"
+        "Existing profile:\n"
+        f"  favorite_genre:       {profile.favorite_genre}\n"
+        f"  favorite_mood:        {profile.favorite_mood}\n"
+        f"  target_energy:        {profile.target_energy}\n"
+        f"  target_tempo_bpm:     {profile.target_tempo_bpm}\n"
+        f"  target_valence:       {profile.target_valence}\n"
+        f"  target_danceability:  {profile.target_danceability}\n"
+        f"  target_acousticness:  {profile.target_acousticness}\n\n"
+    )
+
+
+def _build_prompt(
+    inputs: BuildInputs, starting_from: UserProfile | None = None
+) -> str:
     return PROFILE_EXTRACTOR_PROMPT.format(
-        nl_input=nl_input,
+        inputs_block=_format_inputs_bundle(inputs),
+        starting_from_block=_format_starting_from(starting_from),
         allowed_genres=", ".join(_allowed_genres()),
         allowed_moods=", ".join(_allowed_moods()),
     )
@@ -95,15 +139,21 @@ def _parse_payload(payload: dict) -> tuple[UserProfile, list[str]]:
     return UserProfile.from_dict(resolved), warnings
 
 
-def extract_profile(nl_input: str, llm: LLMClient) -> tuple[UserProfile, list[str]]:
-    """Extract a UserProfile from free-form NL input.
+def extract_profile(
+    inputs: BuildInputs,
+    llm: LLMClient,
+    *,
+    starting_from: UserProfile | None = None,
+) -> tuple[UserProfile, list[str]]:
+    """Extract a UserProfile from a labeled BuildInputs bundle.
 
-    Returns the profile plus a list of warning strings noting any
-    fallback substitutions made (e.g. unknown genre mapped to default).
-    The warnings are intended to surface in PipelineResult so presenters
-    can show "we mapped 'reggae' to 'acoustic'" instead of failing silently.
+    Builds a labeled prompt that includes only the non-blank fields from
+    `inputs`, plus an optional starting-profile seed when `starting_from`
+    is provided (re-describe-to-update flow). Returns the profile plus a
+    list of warning strings noting any fallback substitutions made
+    (e.g. unknown genre mapped to default).
     """
-    prompt = _build_prompt(nl_input)
+    prompt = _build_prompt(inputs, starting_from=starting_from)
     raw = llm.generate(prompt)
     try:
         payload = json.loads(strip_json_fences(raw))

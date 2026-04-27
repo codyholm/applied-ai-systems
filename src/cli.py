@@ -7,7 +7,15 @@ from dotenv import load_dotenv
 
 from src.agents.profile_extractor import ProfileExtractionError
 from src.llm.client import CachedLLMClient, GeminiClient, LLMClient, StubLLMClient
-from src.pipeline import PipelineResult, run_pipeline
+from src.pipeline import (
+    BuildInputs,
+    EmptyBuildInputsError,
+    ProfileBuildResult,
+    RecommendationResult,
+    build_profile,
+    recommend,
+)
+from src.recommender import UserProfile
 
 
 USAGE = 'Usage: python -m src.cli "<natural-language request>"'
@@ -24,57 +32,65 @@ def _build_client() -> LLMClient:
     return StubLLMClient([])
 
 
-def _format_profile_block(result: PipelineResult) -> list[str]:
-    p = result.extracted_profile
+def _format_profile_block(profile: UserProfile, header: str) -> list[str]:
     return [
-        "Extracted profile:",
-        f"  favorite_genre:       {p.favorite_genre}",
-        f"  favorite_mood:        {p.favorite_mood}",
-        f"  target_energy:        {p.target_energy}",
-        f"  target_tempo_bpm:     {p.target_tempo_bpm}",
-        f"  target_valence:       {p.target_valence}",
-        f"  target_danceability:  {p.target_danceability}",
-        f"  target_acousticness:  {p.target_acousticness}",
+        header,
+        f"  favorite_genre:       {profile.favorite_genre}",
+        f"  favorite_mood:        {profile.favorite_mood}",
+        f"  target_energy:        {profile.target_energy}",
+        f"  target_tempo_bpm:     {profile.target_tempo_bpm}",
+        f"  target_valence:       {profile.target_valence}",
+        f"  target_danceability:  {profile.target_danceability}",
+        f"  target_acousticness:  {profile.target_acousticness}",
     ]
 
 
-def _format_refinement_summary(result: PipelineResult) -> str:
-    parts = [f"iter {step.iter_index}: {step.verdict}" for step in result.refinement_history]
+def _format_refinement_summary(build: ProfileBuildResult) -> str:
+    parts = [f"iter {step.iter_index}: {step.verdict}" for step in build.refinement_history]
     summary = "Refinement summary: " + " -> ".join(parts) if parts else "Refinement summary: (none)"
-    if result.ambiguous_match:
+    if build.ambiguous_match:
         summary += "  [!] ambiguous match"
     return summary
 
 
-def _render(result: PipelineResult) -> str:
+def _render(
+    nl_input: str, build: ProfileBuildResult, rec: RecommendationResult
+) -> str:
     out: list[str] = []
-    out.append(f"Input: {result.nl_input}")
+    out.append(f"Input: {nl_input}")
     out.append("")
-    out.extend(_format_profile_block(result))
+    out.extend(_format_profile_block(build.extracted_profile, "Extracted profile:"))
+    if build.candidate_profile != build.extracted_profile:
+        out.append("")
+        out.extend(
+            _format_profile_block(
+                build.candidate_profile, "Candidate profile (after critic refinement):"
+            )
+        )
     out.append("")
-    if result.extractor_warnings:
+    if build.extractor_warnings:
         out.append("Extractor warnings:")
-        for warning in result.extractor_warnings:
+        for warning in build.extractor_warnings:
             out.append(f"  - {warning}")
         out.append("")
-    out.append(_format_refinement_summary(result))
+    out.append(_format_refinement_summary(build))
     out.append("")
-    for index, (rec, expl) in enumerate(
-        zip(result.recommendations, result.explanations), start=1
+    for index, (scored, expl) in enumerate(
+        zip(rec.recommendations, rec.explanations), start=1
     ):
         out.append(
-            f"{index}. {rec.song.title} - {rec.song.artist}  (score {rec.score:.2f})"
+            f"{index}. {scored.song.title} - {scored.song.artist}  (score {scored.score:.2f})"
         )
         if expl.text is not None:
             out.append(f"   {expl.text}")
         else:
             out.append(f"   [mechanical reasons only - {expl.fallback_reason}]")
-        for reason in rec.reasons:
+        for reason in scored.reasons:
             out.append(f"   - {reason}")
         out.append("")
-    if result.cache_stats is not None:
+    if rec.cache_stats is not None:
         out.append(
-            f"cache: {result.cache_stats['hits']} hits, {result.cache_stats['misses']} misses"
+            f"cache: {rec.cache_stats['hits']} hits, {rec.cache_stats['misses']} misses"
         )
     return "\n".join(out)
 
@@ -90,7 +106,11 @@ def main() -> None:
     client = _build_client()
 
     try:
-        result = run_pipeline(nl_input, llm=client)
+        build = build_profile(BuildInputs(description=nl_input), client)
+        rec = recommend(build.candidate_profile, client)
+    except EmptyBuildInputsError as exc:
+        print(f"Empty input - {exc}", file=sys.stderr)
+        sys.exit(2)
     except ProfileExtractionError as exc:
         print("Could not parse the request - try rephrasing.", file=sys.stderr)
         print(f"  reason: {exc}", file=sys.stderr)
@@ -103,7 +123,7 @@ def main() -> None:
         print(f"  {exc.__class__.__name__}: {exc}", file=sys.stderr)
         sys.exit(1)
 
-    print(_render(result))
+    print(_render(nl_input, build, rec))
 
 
 if __name__ == "__main__":

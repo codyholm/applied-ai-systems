@@ -10,8 +10,15 @@ from __future__ import annotations
 import statistics
 from typing import Callable
 
+from typing import Any
+
 from src.eval.cases import EvalCase
-from src.pipeline import PipelineResult
+
+# Until milestone 5.5 fully restructures the eval harness around
+# RecommendationResult + ProfileBuildResult, the structural assertions
+# accept any object that exposes `recommendations`, `ambiguous_match`,
+# and `refinement_history` (a small adapter built in src/eval/harness.py).
+PipelineResult = Any  # transitional alias for legacy type hints below
 
 
 def _high_energy_pop(result: PipelineResult) -> tuple[bool, list[str]]:

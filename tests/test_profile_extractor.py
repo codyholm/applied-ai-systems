@@ -9,6 +9,8 @@ from src.agents.profile_extractor import (
     extract_profile,
 )
 from src.llm.client import LLMClient
+from src.pipeline import BuildInputs
+from src.recommender import UserProfile
 
 
 VALID_PROFILE_JSON = json.dumps(
@@ -21,6 +23,13 @@ VALID_PROFILE_JSON = json.dumps(
         "target_danceability": 0.5,
         "target_acousticness": 0.8,
     }
+)
+
+
+_INPUTS = BuildInputs(
+    activity="studying late at night",
+    feeling="calm and focused",
+    description="quiet headphones-on stuff with a vinyl warmth",
 )
 
 
@@ -41,7 +50,7 @@ class _CountingStub(LLMClient):
 def test_extract_happy_path():
     llm = _CountingStub([VALID_PROFILE_JSON])
 
-    profile, warnings = extract_profile("chill lofi for studying", llm)
+    profile, warnings = extract_profile(_INPUTS, llm)
 
     assert profile.favorite_genre == "lofi"
     assert profile.favorite_mood == "chill"
@@ -50,10 +59,51 @@ def test_extract_happy_path():
     assert warnings == []
 
 
+def test_extract_prompt_includes_only_filled_fields():
+    """Blank/None fields are skipped; filled fields appear with their labels."""
+    inputs = BuildInputs(
+        activity="studying",
+        description="quiet vinyl",
+        feeling=None,
+        movement="   ",  # whitespace-only is treated as blank
+    )
+    llm = _CountingStub([VALID_PROFILE_JSON])
+
+    extract_profile(inputs, llm)
+
+    prompt = llm.prompts[0]
+    assert "Activity" in prompt
+    assert "studying" in prompt
+    assert "Description" in prompt
+    assert "quiet vinyl" in prompt
+    assert "Feeling" not in prompt
+    assert "Movement" not in prompt
+
+
+def test_extract_with_starting_from_includes_seed_block():
+    """starting_from snippet is rendered into the prompt."""
+    seed = UserProfile(
+        favorite_genre="lofi",
+        favorite_mood="chill",
+        target_energy=0.4,
+        target_tempo_bpm=78.0,
+        target_valence=0.6,
+        target_danceability=0.6,
+        target_acousticness=0.78,
+    )
+    llm = _CountingStub([VALID_PROFILE_JSON])
+
+    extract_profile(_INPUTS, llm, starting_from=seed)
+
+    prompt = llm.prompts[0]
+    assert "An existing profile is provided as a seed" in prompt
+    assert "favorite_genre:       lofi" in prompt
+
+
 def test_extract_retries_once_on_parse_failure():
     llm = _CountingStub(["not json", VALID_PROFILE_JSON])
 
-    profile, _warnings = extract_profile("anything", llm)
+    profile, _warnings = extract_profile(_INPUTS, llm)
 
     assert profile.favorite_genre == "lofi"
     assert len(llm.prompts) == 2
@@ -65,7 +115,7 @@ def test_extract_raises_after_two_parse_failures():
     llm = _CountingStub(["not json", "still not json"])
 
     with pytest.raises(ProfileExtractionError):
-        extract_profile("anything", llm)
+        extract_profile(_INPUTS, llm)
     assert len(llm.prompts) == 2
 
 
@@ -83,7 +133,7 @@ def test_extract_clamps_out_of_range_values():
     )
     llm = _CountingStub([out_of_range])
 
-    profile, _warnings = extract_profile("hyperbolic input", llm)
+    profile, _warnings = extract_profile(_INPUTS, llm)
 
     assert profile.target_energy == 1.0
     assert profile.target_tempo_bpm == 40.0
@@ -98,7 +148,7 @@ def test_extract_falls_back_unknown_genre_and_records_warning(caplog):
     llm = _CountingStub([json.dumps(payload)])
 
     with caplog.at_level("WARNING"):
-        profile, warnings = extract_profile("dnb please", llm)
+        profile, warnings = extract_profile(_INPUTS, llm)
 
     # The fallback is the first allowed genre alphabetically.
     assert profile.favorite_genre == "acoustic"
