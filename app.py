@@ -139,7 +139,7 @@ def _render_profile_table(profile: UserProfile) -> None:
 def _render_recommendation_card(scored, expl) -> None:
     with st.container(border=True):
         cols = st.columns([4, 1])
-        cols[0].markdown(f"### {scored.song.title}")
+        cols[0].subheader(scored.song.title, anchor=False)
         cols[0].markdown(
             f"_{scored.song.artist}_  -  `{scored.song.genre}` / `{scored.song.mood}`"
         )
@@ -159,7 +159,7 @@ def _render_recommendation_card(scored, expl) -> None:
 
 
 def _render_recommendations(rec: RecommendationResult, label: str) -> None:
-    st.markdown(f"### Top {len(rec.recommendations)} for **{label}**")
+    st.subheader(f"Top {len(rec.recommendations)} for {label}", anchor=False)
     for scored, expl in zip(rec.recommendations, rec.explanations):
         _render_recommendation_card(scored, expl)
 
@@ -241,6 +241,13 @@ def _render_recommend_tab(client: LLMClient, show_debug: bool) -> None:
         return
 
     labels = [label for label, _kind, _name in options]
+    # Consume any pending cross-tab pre-selection BEFORE the selectbox is
+    # instantiated. Streamlit forbids mutating a widget's session_state key
+    # after the widget is created, so cross-tab handoffs use a separate
+    # `pending_recommend_label` slot that we transfer here.
+    pending = st.session_state.pop("pending_recommend_label", None)
+    if pending in labels:
+        st.session_state["recommend_picker_label"] = pending
     # Reset stored selection if it points to a profile that no longer exists.
     if st.session_state.get("recommend_picker_label") not in labels:
         st.session_state["recommend_picker_label"] = labels[0]
@@ -313,6 +320,12 @@ def _render_build_tab(client: LLMClient, show_debug: bool) -> None:
 
     seed_options = _profile_picker_options(include_none=True)
     seed_labels = [label for label, _kind, _name in seed_options]
+    # Same pending-slot pattern as the recommend picker: cross-tab handoffs
+    # write to `pending_build_seed_label` and we transfer here, before the
+    # seed selectbox is instantiated.
+    pending_seed = st.session_state.pop("pending_build_seed_label", None)
+    if pending_seed in seed_labels:
+        st.session_state["build_seed_label"] = pending_seed
     # Reset stored seed if it points to a profile that no longer exists.
     if st.session_state.get("build_seed_label") not in seed_labels:
         st.session_state["build_seed_label"] = seed_labels[0]
@@ -513,7 +526,7 @@ def _render_edit_form(name: str, profile: UserProfile) -> None:
 def _render_saved_profile_card(name: str, created) -> None:
     with st.container(border=True):
         cols = st.columns([3, 1])
-        cols[0].markdown(f"### {name}")
+        cols[0].subheader(name, anchor=False)
         cols[0].caption(f"created {created.isoformat()}")
 
         try:
@@ -551,11 +564,9 @@ def _render_saved_profile_card(name: str, created) -> None:
         if action_cols[2].button(
             "Use for recommend", key=f"use_btn_{name}", use_container_width=True
         ):
-            st.session_state["recommend_picker_label"] = f"Saved: {name}"
-            st.success(
-                f"Selected **{name}** for recommend. Switch to the "
-                f"**Recommend** tab and click *Recommend*."
-            )
+            st.session_state["pending_recommend_label"] = f"Saved: {name}"
+            st.session_state["pending_recommend_announce"] = name
+            st.rerun()
 
         if editing:
             st.divider()
@@ -586,7 +597,7 @@ def _render_preset_card(slug: str) -> None:
 
     with st.container(border=True):
         cols = st.columns([3, 1])
-        cols[0].markdown(f"### {display}")
+        cols[0].subheader(display, anchor=False)
         cols[0].caption(f"preset slug: `{slug}` (read-only)")
 
         with st.expander("Show fields", expanded=False):
@@ -596,20 +607,16 @@ def _render_preset_card(slug: str) -> None:
         if action_cols[0].button(
             "Use for recommend", key=f"preset_use_{slug}", use_container_width=True
         ):
-            st.session_state["recommend_picker_label"] = f"Preset: {display}"
-            st.success(
-                f"Selected **{display}** for recommend. Switch to the "
-                f"**Recommend** tab and click *Recommend*."
-            )
+            st.session_state["pending_recommend_label"] = f"Preset: {display}"
+            st.session_state["pending_recommend_announce"] = display
+            st.rerun()
 
         if action_cols[1].button(
             "Use as build seed", key=f"preset_seed_{slug}", use_container_width=True
         ):
-            st.session_state["build_seed_label"] = f"Preset: {display}"
-            st.success(
-                f"Set **{display}** as the seed for the next build. Switch "
-                f"to the **Build profile** tab to fill in your changes."
-            )
+            st.session_state["pending_build_seed_label"] = f"Preset: {display}"
+            st.session_state["pending_build_seed_announce"] = display
+            st.rerun()
 
 
 def _render_manage_tab() -> None:
@@ -617,6 +624,21 @@ def _render_manage_tab() -> None:
         "Saved profiles persist across sessions in `applied-ai-systems/profiles/`. "
         "Presets are immutable — derive new profiles from them via *Use as build seed*."
     )
+
+    # Surface confirmation messages from cross-tab pre-selection (the
+    # actual selection happens via pending_* slots on the receiving tab).
+    rec_announce = st.session_state.pop("pending_recommend_announce", None)
+    if rec_announce:
+        st.success(
+            f"Selected **{rec_announce}** for recommend. Switch to the "
+            f"**Recommend** tab and click *Recommend*."
+        )
+    seed_announce = st.session_state.pop("pending_build_seed_announce", None)
+    if seed_announce:
+        st.success(
+            f"Set **{seed_announce}** as the seed for the next build. "
+            f"Switch to the **Build profile** tab to fill in your changes."
+        )
 
     saved = list_profiles()
     st.markdown("### Saved profiles")
