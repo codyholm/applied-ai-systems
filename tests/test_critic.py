@@ -137,3 +137,77 @@ def test_critic_clamps_adjustments_into_valid_ranges():
         "target_valence": 0.0,
         "favorite_genre": "rock",
     }
+
+
+# --- avoid_genres adjustments -----------------------------------------------
+
+
+def test_critic_can_adjust_avoid_genres():
+    response = json.dumps(
+        {
+            "verdict": "refine",
+            "adjustments": {"avoid_genres": ["pop"]},
+            "reason": "listener said no pop",
+        }
+    )
+    llm = StubLLMClient([response])
+
+    inputs = BuildInputs(description="lofi but no pop please")
+    result = critique_extraction(inputs, CANDIDATE, llm)
+
+    assert result.verdict == "refine"
+    assert result.adjustments == {"avoid_genres": ["pop"]}
+
+
+def test_critic_drops_invalid_avoid_genres_entries_in_adjustments():
+    response = json.dumps(
+        {
+            "verdict": "refine",
+            "adjustments": {"avoid_genres": ["pop", "made_up_genre"]},
+            "reason": "trim list",
+        }
+    )
+    llm = StubLLMClient([response])
+
+    inputs = BuildInputs(description="no pop")
+    result = critique_extraction(inputs, CANDIDATE, llm)
+
+    assert result.verdict == "refine"
+    assert result.adjustments == {"avoid_genres": ["pop"]}
+
+
+def test_critic_rejects_non_list_avoid_genres_in_adjustments():
+    # Only the avoid_genres adjustment is malformed; with no other valid
+    # adjustments, the critic degrades to ok.
+    response = json.dumps(
+        {
+            "verdict": "refine",
+            "adjustments": {"avoid_genres": "pop"},
+            "reason": "wrong shape",
+        }
+    )
+    llm = StubLLMClient([response])
+
+    inputs = BuildInputs(description="no pop")
+    result = critique_extraction(inputs, CANDIDATE, llm)
+
+    assert result.verdict == "ok"
+    assert result.adjustments is None
+
+
+def test_critic_can_adjust_avoid_genres_to_empty_list():
+    # Removing an over-zealous avoid is a valid refine path.
+    response = json.dumps(
+        {
+            "verdict": "refine",
+            "adjustments": {"avoid_genres": []},
+            "reason": "listener never said avoid",
+        }
+    )
+    llm = StubLLMClient([response])
+
+    inputs = BuildInputs(description="just lofi")
+    result = critique_extraction(inputs, CANDIDATE, llm)
+
+    assert result.verdict == "refine"
+    assert result.adjustments == {"avoid_genres": []}

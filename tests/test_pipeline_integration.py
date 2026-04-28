@@ -236,6 +236,28 @@ def test_build_profile_with_starting_from_seed():
     assert "favorite_genre:       lofi" in extractor_prompt
 
 
+def test_build_profile_refinement_applies_avoid_genres_adjustment():
+    """Critic refines avoid_genres; the candidate gains the corrected list."""
+    critic_refine = json.dumps(
+        {
+            "verdict": "refine",
+            "adjustments": {"avoid_genres": ["pop"]},
+            "reason": "listener said no pop",
+        }
+    )
+    critic_ok = json.dumps({"verdict": "ok", "adjustments": None, "reason": "ok"})
+    llm = StubLLMClient([_EXTRACTOR_JSON, critic_refine, critic_ok])
+
+    inputs = BuildInputs(description="lofi but absolutely no pop")
+    result = build_profile(inputs, llm)
+
+    assert result.extracted_profile.avoid_genres == []
+    assert result.candidate_profile.avoid_genres == ["pop"]
+    assert len(result.refinement_history) == 2
+    assert result.refinement_history[0].verdict == "refine"
+    assert result.refinement_history[0].candidate_after_iter["avoid_genres"] == ["pop"]
+
+
 def test_build_profile_surfaces_extractor_warnings():
     """Unknown genre falls back and the warning surfaces in the result."""
     payload = json.loads(_EXTRACTOR_JSON)

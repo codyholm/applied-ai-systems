@@ -51,6 +51,7 @@ _PROFILE_FIELDS = {
     "target_valence",
     "target_danceability",
     "target_acousticness",
+    "avoid_genres",
 }
 
 
@@ -157,6 +158,7 @@ def _profile_snapshot(profile: UserProfile) -> dict:
         "target_valence": profile.target_valence,
         "target_danceability": profile.target_danceability,
         "target_acousticness": profile.target_acousticness,
+        "avoid_genres": list(profile.avoid_genres),
     }
 
 

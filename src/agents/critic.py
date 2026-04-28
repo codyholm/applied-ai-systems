@@ -5,6 +5,7 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from src.agents.profile_extractor import _allowed_genres, _resolve_allowed_list
 from src.llm.client import LLMClient
 from src.llm.parsing import strip_json_fences
 from src.llm.prompts import CRITIC_PROMPT
@@ -25,7 +26,8 @@ _NUMERIC_KEYS = {
     "target_acousticness",
 }
 _STRING_KEYS = {"favorite_genre", "favorite_mood"}
-_ALLOWED_KEYS = _NUMERIC_KEYS | _STRING_KEYS
+_LIST_KEYS = {"avoid_genres"}
+_ALLOWED_KEYS = _NUMERIC_KEYS | _STRING_KEYS | _LIST_KEYS
 
 _NUMERIC_RANGES = {
     "target_energy": (0.0, 1.0),
@@ -64,6 +66,7 @@ def _format_inputs_bundle(inputs: BuildInputs) -> str:
 
 
 def _format_profile(profile: UserProfile) -> str:
+    avoid_display = ", ".join(profile.avoid_genres) if profile.avoid_genres else "(none)"
     return (
         f"  favorite_genre: {profile.favorite_genre}\n"
         f"  favorite_mood:  {profile.favorite_mood}\n"
@@ -71,12 +74,13 @@ def _format_profile(profile: UserProfile) -> str:
         f"  target_tempo_bpm:     {profile.target_tempo_bpm}\n"
         f"  target_valence:       {profile.target_valence}\n"
         f"  target_danceability:  {profile.target_danceability}\n"
-        f"  target_acousticness:  {profile.target_acousticness}"
+        f"  target_acousticness:  {profile.target_acousticness}\n"
+        f"  avoid_genres:         {avoid_display}"
     )
 
 
-def _clamp_adjustments(raw: dict) -> dict[str, float | str]:
-    cleaned: dict[str, float | str] = {}
+def _clamp_adjustments(raw: dict) -> dict[str, float | str | list[str]]:
+    cleaned: dict[str, float | str | list[str]] = {}
     for key, value in raw.items():
         if key not in _ALLOWED_KEYS:
             log.warning("critic: dropping disallowed adjustment key %r", key)
@@ -88,6 +92,16 @@ def _clamp_adjustments(raw: dict) -> dict[str, float | str]:
             except (TypeError, ValueError):
                 log.warning("critic: dropping non-numeric value for %r: %r", key, value)
                 continue
+        elif key in _LIST_KEYS:
+            if not isinstance(value, list):
+                log.warning("critic: dropping non-list value for %r: %r", key, value)
+                continue
+            # Reuse the extractor's list resolver; warnings stay local to the
+            # critic (we don't surface them upstream).
+            scratch_warnings: list[str] = []
+            cleaned[key] = _resolve_allowed_list(
+                value, _allowed_genres(), key, scratch_warnings
+            )
         else:  # string keys
             if isinstance(value, str) and value:
                 cleaned[key] = value

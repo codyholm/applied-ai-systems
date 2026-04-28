@@ -128,6 +128,11 @@ Concrete guidance:
   ~10 BPM of it.
 - If the listener named a genre present in the catalog, favorite_genre
   should match it.
+- If the listener explicitly said they want to AVOID, DISLIKE, or DON'T
+  WANT a genre, that genre MUST appear in candidate.avoid_genres. If it
+  doesn't, refine with the corrected list. If a genre is in
+  candidate.avoid_genres but the listener never flagged it as unwanted,
+  refine with the corrected list (which may be empty).
 - If the listener was silent on a field (e.g. did not mention valence),
   the extractor's chosen value is faithful by default — do not refine.
 - "ok" is the right verdict when the candidate is *good enough*; reserve
@@ -145,7 +150,8 @@ markdown fences:
         "target_tempo_bpm":     <float in [40.0, 220.0]>,
         "target_valence":       <float in [0.0, 1.0]>,
         "target_danceability":  <float in [0.0, 1.0]>,
-        "target_acousticness":  <float in [0.0, 1.0]>
+        "target_acousticness":  <float in [0.0, 1.0]>,
+        "avoid_genres":         [<zero or more allowed genres>]
     }},
     "reason": "<1-2 short sentences>"
   }}
@@ -154,8 +160,10 @@ Rules:
 - adjustments MUST be null when verdict is "ok".
 - adjustments MUST be a non-empty object when verdict is "refine"; include
   ONLY the fields that need correcting, with their corrected absolute
-  values. You MAY NOT add or modify any keys outside the seven above.
+  values. You MAY NOT add or modify any keys outside the eight above.
 - Numeric values are absolute targets, not deltas.
+- avoid_genres adjustments are absolute REPLACEMENTS for the candidate's
+  current list, not additions. Include the FULL corrected list.
 
 Listener inputs (only the fields the listener filled are shown):
 {inputs_block}
