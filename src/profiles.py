@@ -57,6 +57,7 @@ PRESET_PROFILES: dict[str, UserProfile] = {
         target_acousticness=0.15,
         target_valence=0.85,
         target_danceability=0.85,
+        avoid_genres=[],
     ),
     "chill_lofi": UserProfile(
         favorite_genre="lofi",
@@ -66,6 +67,7 @@ PRESET_PROFILES: dict[str, UserProfile] = {
         target_acousticness=0.80,
         target_valence=0.55,
         target_danceability=0.50,
+        avoid_genres=[],
     ),
     "deep_intense_rock": UserProfile(
         favorite_genre="rock",
@@ -75,6 +77,7 @@ PRESET_PROFILES: dict[str, UserProfile] = {
         target_acousticness=0.10,
         target_valence=0.45,
         target_danceability=0.65,
+        avoid_genres=[],
     ),
     "chill_rock": UserProfile(
         favorite_genre="rock",
@@ -84,6 +87,7 @@ PRESET_PROFILES: dict[str, UserProfile] = {
         target_acousticness=0.35,
         target_valence=0.40,
         target_danceability=0.50,
+        avoid_genres=[],
     ),
     "boundary_maximalist": UserProfile(
         favorite_genre="electronic",
@@ -93,6 +97,7 @@ PRESET_PROFILES: dict[str, UserProfile] = {
         target_acousticness=0.0,
         target_valence=1.0,
         target_danceability=1.0,
+        avoid_genres=[],
     ),
 }
 

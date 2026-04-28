@@ -125,6 +125,39 @@ def test_user_profile_from_dict_builds_instance_with_type_casts():
     assert isinstance(profile.target_tempo_bpm, float)
 
 
+def test_user_profile_from_dict_omits_avoid_genres_defaults_to_empty_list():
+    # Back-compat: profiles persisted before avoid_genres existed must still
+    # load. Missing key -> empty list, not a KeyError.
+    profile = UserProfile.from_dict(
+        {
+            "favorite_genre": "pop",
+            "favorite_mood": "happy",
+            "target_energy": 0.85,
+            "target_tempo_bpm": 124.0,
+            "target_valence": 0.85,
+            "target_danceability": 0.85,
+            "target_acousticness": 0.15,
+        }
+    )
+    assert profile.avoid_genres == []
+
+
+def test_user_profile_from_dict_lowercases_avoid_genres():
+    profile = UserProfile.from_dict(
+        {
+            "favorite_genre": "pop",
+            "favorite_mood": "happy",
+            "target_energy": 0.85,
+            "target_tempo_bpm": 124.0,
+            "target_valence": 0.85,
+            "target_danceability": 0.85,
+            "target_acousticness": 0.15,
+            "avoid_genres": ["Country", "METAL"],
+        }
+    )
+    assert profile.avoid_genres == ["country", "metal"]
+
+
 # --- score_song --------------------------------------------------------------
 
 
@@ -145,6 +178,29 @@ def test_score_song_higher_when_genre_and_mood_match():
     lofi_score, _ = score_song(pop_profile, lofi_song)
 
     assert pop_score > lofi_score
+
+
+def test_score_song_zeros_when_genre_in_avoid_list():
+    profile = make_pop_profile(avoid_genres=["lofi"])
+    score, reasons = score_song(profile, make_lofi_song())
+    assert score == 0.0
+    assert reasons == ["avoided genre: lofi"]
+
+
+def test_score_song_avoid_is_case_insensitive():
+    profile = make_pop_profile(avoid_genres=["LoFi"])
+    score, reasons = score_song(profile, make_lofi_song())
+    assert score == 0.0
+    assert reasons == ["avoided genre: lofi"]
+
+
+def test_score_song_unaffected_when_avoid_genres_empty():
+    # Regression: ensure the short-circuit doesn't change scoring math when
+    # avoid_genres is empty (the default).
+    profile = make_pop_profile(avoid_genres=[])
+    score, reasons = score_song(profile, make_pop_song())
+    assert score > 0.0
+    assert "avoided" not in " ".join(reasons)
 
 
 # --- recommend_songs ---------------------------------------------------------

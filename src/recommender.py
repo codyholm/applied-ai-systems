@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import csv
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 GENRE_WEIGHT = 3.5
@@ -71,11 +71,15 @@ class UserProfile:
     target_valence: float
     target_danceability: float
     target_acousticness: float
+    avoid_genres: list[str] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, d: dict) -> "UserProfile":
         # Plain type casts only. Clamping/validation is the Profile Extractor's
         # job in Step 2; keeping this boundary thin on purpose.
+        # avoid_genres is optional for back-compat with profiles persisted
+        # before the field existed; missing key -> empty list.
+        raw_avoid = d.get("avoid_genres", []) or []
         return cls(
             favorite_genre=str(d["favorite_genre"]),
             favorite_mood=str(d["favorite_mood"]),
@@ -84,6 +88,7 @@ class UserProfile:
             target_valence=float(d["target_valence"]),
             target_danceability=float(d["target_danceability"]),
             target_acousticness=float(d["target_acousticness"]),
+            avoid_genres=[str(g).lower() for g in raw_avoid],
         )
 
 
@@ -109,6 +114,11 @@ def _clamp_similarity(value: float) -> float:
 
 def score_song(user: UserProfile, song: Song) -> tuple[float, list[str]]:
     """Score one song against a user's preferences and explain why."""
+    if user.avoid_genres:
+        avoid_lower = {g.lower() for g in user.avoid_genres}
+        if song.genre.lower() in avoid_lower:
+            return 0.0, [f"avoided genre: {song.genre}"]
+
     score = 0.0
     reasons: list[str] = []
 
