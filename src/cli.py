@@ -86,6 +86,7 @@ _PROFILE_FIELDS_ORDERED: tuple[str, ...] = tuple(
 
 
 def _format_profile_block(profile: UserProfile, header: str) -> list[str]:
+    avoid_display = ", ".join(profile.avoid_genres) if profile.avoid_genres else "(none)"
     return [
         header,
         f"  favorite_genre:       {profile.favorite_genre}",
@@ -95,6 +96,7 @@ def _format_profile_block(profile: UserProfile, header: str) -> list[str]:
         f"  target_valence:       {profile.target_valence}",
         f"  target_danceability:  {profile.target_danceability}",
         f"  target_acousticness:  {profile.target_acousticness}",
+        f"  avoid_genres:         {avoid_display}",
     ]
 
 
@@ -310,6 +312,15 @@ def _cmd_profiles_show(args: argparse.Namespace) -> int:
 
 
 def _prompt_for_field(field: str, current: object) -> object:
+    if isinstance(current, list):
+        display = ", ".join(str(x) for x in current) if current else "(none)"
+        raw = input(f"  {field} [{display}]: ").strip()
+        if not raw:
+            return current
+        # Comma-separated parse; "(none)" or "-" clears the list explicitly.
+        if raw in {"(none)", "-"}:
+            return []
+        return [g.strip().lower() for g in raw.split(",") if g.strip()]
     raw = input(f"  {field} [{current}]: ").strip()
     if not raw:
         return current

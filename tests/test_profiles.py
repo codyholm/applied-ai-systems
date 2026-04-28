@@ -198,3 +198,33 @@ def test_edit_profile_fields_rejects_unknown_field(tmp_profiles_dir):
 def test_edit_profile_fields_raises_when_profile_missing(tmp_profiles_dir):
     with pytest.raises(ProfileNotFoundError):
         edit_profile_fields("never-saved", target_energy=0.5)
+
+
+def test_edit_profile_fields_updates_avoid_genres(tmp_profiles_dir):
+    save_profile("study mode", _sample_profile())
+
+    updated = edit_profile_fields("study mode", avoid_genres=["pop", "rock"])
+
+    assert updated.avoid_genres == ["pop", "rock"]
+    reloaded = load_profile("study mode")
+    assert reloaded.avoid_genres == ["pop", "rock"]
+
+
+def test_edit_profile_fields_clears_avoid_genres_with_empty_list(tmp_profiles_dir):
+    seeded = UserProfile(
+        favorite_genre="lofi",
+        favorite_mood="chill",
+        target_energy=0.4,
+        target_tempo_bpm=78.0,
+        target_valence=0.6,
+        target_danceability=0.5,
+        target_acousticness=0.8,
+        avoid_genres=["pop"],
+    )
+    save_profile("clear test", seeded)
+
+    updated = edit_profile_fields("clear test", avoid_genres=[])
+
+    assert updated.avoid_genres == []
+    reloaded = load_profile("clear test")
+    assert reloaded.avoid_genres == []

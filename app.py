@@ -133,6 +133,7 @@ def _resolve_picked(kind: str, name: str) -> UserProfile | None:
 
 
 def _profile_row_dict(profile: UserProfile) -> dict[str, list[Any]]:
+    avoid_display = ", ".join(profile.avoid_genres) if profile.avoid_genres else "(none)"
     return {
         "favorite_genre": [profile.favorite_genre],
         "favorite_mood": [profile.favorite_mood],
@@ -141,6 +142,7 @@ def _profile_row_dict(profile: UserProfile) -> dict[str, list[Any]]:
         "target_valence": [round(profile.target_valence, 3)],
         "target_danceability": [round(profile.target_danceability, 3)],
         "target_acousticness": [round(profile.target_acousticness, 3)],
+        "avoid_genres": [avoid_display],
     }
 
 
@@ -677,12 +679,22 @@ def _render_edit_form(name: str, profile: UserProfile) -> None:
             "target_acousticness", 0.0, 1.0, value=float(profile.target_acousticness), step=0.05,
             key=f"edit_{name}_acoustic",
         )
+        new_avoid = st.multiselect(
+            "avoid_genres",
+            options=_allowed_genres(),
+            default=[g for g in profile.avoid_genres if g in _allowed_genres()],
+            key=f"edit_{name}_avoid",
+            help="SongFinder will hard-skip songs in these genres.",
+        )
 
         cols = st.columns(2)
         save_clicked = cols[0].form_submit_button("Save changes", type="primary")
         cancel_clicked = cols[1].form_submit_button("Cancel")
 
     if save_clicked:
+        if new_genre in new_avoid:
+            st.error("Cannot avoid your favorite genre. Remove it from one or the other.")
+            return
         try:
             edit_profile_fields(
                 name,
@@ -693,6 +705,7 @@ def _render_edit_form(name: str, profile: UserProfile) -> None:
                 target_valence=new_valence,
                 target_danceability=new_dance,
                 target_acousticness=new_acoustic,
+                avoid_genres=list(new_avoid),
             )
             st.session_state.pop("editing_profile", None)
             st.success(f"Saved changes to **{name}**.")
