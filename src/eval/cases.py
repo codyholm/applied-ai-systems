@@ -134,10 +134,11 @@ BUILD_CASES: list[BuildCase] = [
             feeling="warm and content, gentle",
             movement="moving slowly, unhurried",
             instruments="fingerpicked acoustic guitar, soft vocals",
-            genres="acoustic",
+            genres="acoustic, definitely no electronic or synthwave",
             description=(
                 "Quiet acoustic for slow mornings — fingerpicked guitar, "
-                "gentle vocals, vinyl warmth, no drums."
+                "gentle vocals, vinyl warmth, no drums. Please avoid anything "
+                "electronic or synthwave; I want it to feel unplugged."
             ),
         ),
         expected_profile=UserProfile(
@@ -148,6 +149,7 @@ BUILD_CASES: list[BuildCase] = [
             target_acousticness=0.85,
             target_valence=0.65,
             target_danceability=0.25,
+            avoid_genres=["electronic", "synthwave"],
         ),
     ),
     BuildCase(

@@ -68,6 +68,14 @@ def assert_build_neighborhood(
                 f"(>{case.numeric_tolerance:.2f} tolerance)"
             )
 
+    candidate_avoid = {g.lower() for g in candidate.avoid_genres}
+    target_avoid = {g.lower() for g in target.avoid_genres}
+    if candidate_avoid != target_avoid:
+        failures.append(
+            f"avoid_genres mismatch: candidate={sorted(candidate_avoid)} "
+            f"expected={sorted(target_avoid)}"
+        )
+
     return len(failures) == 0, failures
 
 
