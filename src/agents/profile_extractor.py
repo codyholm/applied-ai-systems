@@ -39,6 +39,7 @@ _REQUIRED_KEYS = (
     "target_valence",
     "target_danceability",
     "target_acousticness",
+    "avoid_genres",
 )
 
 _RETRY_PREAMBLE = (
@@ -70,6 +71,7 @@ def _format_inputs_bundle(inputs: BuildInputs) -> str:
 def _format_starting_from(profile: UserProfile | None) -> str:
     if profile is None:
         return ""
+    avoid_display = ", ".join(profile.avoid_genres) if profile.avoid_genres else "(none)"
     return (
         "An existing profile is provided as a seed; treat it as the starting\n"
         "point and only modify fields the new inputs clearly change.\n"
@@ -80,7 +82,8 @@ def _format_starting_from(profile: UserProfile | None) -> str:
         f"  target_tempo_bpm:     {profile.target_tempo_bpm}\n"
         f"  target_valence:       {profile.target_valence}\n"
         f"  target_danceability:  {profile.target_danceability}\n"
-        f"  target_acousticness:  {profile.target_acousticness}\n\n"
+        f"  target_acousticness:  {profile.target_acousticness}\n"
+        f"  avoid_genres:         {avoid_display}\n\n"
     )
 
 
@@ -118,15 +121,68 @@ def _resolve_allowed(
     return allowed[0]
 
 
+def _resolve_allowed_list(
+    value, allowed: list[str], field_name: str, warnings: list[str]
+) -> list[str]:
+    """Validate a list-typed categorical field.
+
+    Drops non-list inputs and entries not present in `allowed`, with a
+    warning per drop. Survivors are lowercased and deduplicated while
+    preserving first-seen order.
+    """
+    if not isinstance(value, list):
+        msg = f"{field_name}: non-list value {value!r}; treating as empty list"
+        log.warning("profile_extractor: %s", msg)
+        warnings.append(msg)
+        return []
+    allowed_lower = {a.lower() for a in allowed}
+    seen: set[str] = set()
+    result: list[str] = []
+    for entry in value:
+        if not isinstance(entry, str):
+            msg = f"{field_name}: dropping non-string entry {entry!r}"
+            log.warning("profile_extractor: %s", msg)
+            warnings.append(msg)
+            continue
+        normalized = entry.strip().lower()
+        if not normalized:
+            continue
+        if normalized not in allowed_lower:
+            msg = f"{field_name}: dropping unknown entry {entry!r} (not in allowed list)"
+            log.warning("profile_extractor: %s", msg)
+            warnings.append(msg)
+            continue
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        result.append(normalized)
+    return result
+
+
 def _parse_payload(payload: dict) -> tuple[UserProfile, list[str]]:
     missing = [k for k in _REQUIRED_KEYS if k not in payload]
     if missing:
         raise ProfileExtractionError(f"missing keys in extracted profile: {missing}")
     warnings: list[str] = []
+    favorite_genre = _resolve_allowed(
+        payload["favorite_genre"], _allowed_genres(), "favorite_genre", warnings
+    )
+    avoid_genres = _resolve_allowed_list(
+        payload["avoid_genres"], _allowed_genres(), "avoid_genres", warnings
+    )
+    # Contradiction guard: if the LLM put favorite_genre into avoid_genres,
+    # drop it from the avoid list (favorite wins; the prompt forbids this
+    # but defensive coding is cheap here).
+    if favorite_genre.lower() in avoid_genres:
+        msg = (
+            f"avoid_genres: dropping {favorite_genre!r} because it is the "
+            f"favorite_genre"
+        )
+        log.warning("profile_extractor: %s", msg)
+        warnings.append(msg)
+        avoid_genres = [g for g in avoid_genres if g != favorite_genre.lower()]
     resolved = {
-        "favorite_genre": _resolve_allowed(
-            payload["favorite_genre"], _allowed_genres(), "favorite_genre", warnings
-        ),
+        "favorite_genre": favorite_genre,
         "favorite_mood": _resolve_allowed(
             payload["favorite_mood"], _allowed_moods(), "favorite_mood", warnings
         ),
@@ -135,6 +191,7 @@ def _parse_payload(payload: dict) -> tuple[UserProfile, list[str]]:
         "target_valence": _clamp(float(payload["target_valence"]), 0.0, 1.0),
         "target_danceability": _clamp(float(payload["target_danceability"]), 0.0, 1.0),
         "target_acousticness": _clamp(float(payload["target_acousticness"]), 0.0, 1.0),
+        "avoid_genres": avoid_genres,
     }
     return UserProfile.from_dict(resolved), warnings
 

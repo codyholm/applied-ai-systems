@@ -101,6 +101,7 @@ _EXTRACTOR_JSON = json.dumps(
         "target_valence": 0.60,
         "target_danceability": 0.60,
         "target_acousticness": 0.78,
+        "avoid_genres": [],
     }
 )
 

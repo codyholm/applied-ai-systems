@@ -23,13 +23,21 @@ Schema:
     "target_tempo_bpm":     <float in [40.0, 220.0]>,
     "target_valence":       <float in [0.0, 1.0]>,
     "target_danceability":  <float in [0.0, 1.0]>,
-    "target_acousticness":  <float in [0.0, 1.0]>
+    "target_acousticness":  <float in [0.0, 1.0]>,
+    "avoid_genres":         [<zero or more values from: {allowed_genres}>]
   }}
 
 Rules:
 - favorite_genre and favorite_mood MUST be exact lowercase values from the
   allowed lists above. If the listener mentions a genre or mood that is not
   in the list, pick the nearest allowed value.
+- avoid_genres captures genres the listener said they want to avoid,
+  dislike, or don't want. Include ONLY genres the listener explicitly
+  flagged as unwanted (signals like "no", "not", "avoid", "don't want",
+  "anything but", "hate"). Use the same allowed-genre vocabulary as
+  favorite_genre. Emit an empty list [] when the listener did not flag
+  any genre to avoid. Never put the same genre in both favorite_genre
+  and avoid_genres.
 - For any numeric field the listener does not explicitly imply, use a
   neutral default: energy 0.5, tempo 100, valence 0.5, danceability 0.5,
   acousticness 0.4.

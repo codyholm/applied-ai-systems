@@ -22,6 +22,7 @@ VALID_PROFILE_JSON = json.dumps(
         "target_valence": 0.55,
         "target_danceability": 0.5,
         "target_acousticness": 0.8,
+        "avoid_genres": [],
     }
 )
 
@@ -129,6 +130,7 @@ def test_extract_clamps_out_of_range_values():
             "target_valence": -0.3,
             "target_danceability": 2.0,
             "target_acousticness": -0.2,
+            "avoid_genres": [],
         }
     )
     llm = _CountingStub([out_of_range])
@@ -157,3 +159,71 @@ def test_extract_falls_back_unknown_genre_and_records_warning(caplog):
     assert "favorite_genre" in warnings[0]
     assert "drum and bass" in warnings[0]
     assert "acoustic" in warnings[0]
+
+
+# --- avoid_genres ------------------------------------------------------------
+
+
+def test_extract_parses_avoid_genres_list():
+    payload = json.loads(VALID_PROFILE_JSON)
+    payload["avoid_genres"] = ["pop", "rock"]
+    llm = _CountingStub([json.dumps(payload)])
+
+    profile, warnings = extract_profile(_INPUTS, llm)
+
+    assert profile.avoid_genres == ["pop", "rock"]
+    assert warnings == []
+
+
+def test_extract_drops_invalid_avoid_genres_with_warning():
+    payload = json.loads(VALID_PROFILE_JSON)
+    payload["avoid_genres"] = ["pop", "drum and bass"]
+    llm = _CountingStub([json.dumps(payload)])
+
+    profile, warnings = extract_profile(_INPUTS, llm)
+
+    assert profile.avoid_genres == ["pop"]
+    assert any("drum and bass" in w for w in warnings)
+
+
+def test_extract_avoid_genres_empty_list_no_warning():
+    # VALID_PROFILE_JSON already has avoid_genres=[]; this is the explicit
+    # regression that the empty case produces no spurious warnings.
+    llm = _CountingStub([VALID_PROFILE_JSON])
+
+    profile, warnings = extract_profile(_INPUTS, llm)
+
+    assert profile.avoid_genres == []
+    assert warnings == []
+
+
+def test_extract_avoid_genres_lowercases_and_dedupes():
+    payload = json.loads(VALID_PROFILE_JSON)
+    payload["avoid_genres"] = ["Pop", "POP", "rock"]
+    llm = _CountingStub([json.dumps(payload)])
+
+    profile, _warnings = extract_profile(_INPUTS, llm)
+
+    assert profile.avoid_genres == ["pop", "rock"]
+
+
+def test_extract_raises_when_avoid_genres_key_missing():
+    payload = json.loads(VALID_PROFILE_JSON)
+    payload.pop("avoid_genres")
+    llm = _CountingStub([json.dumps(payload)])
+
+    with pytest.raises(ProfileExtractionError, match="avoid_genres"):
+        extract_profile(_INPUTS, llm)
+
+
+def test_extract_drops_avoid_genre_that_matches_favorite_genre():
+    payload = json.loads(VALID_PROFILE_JSON)
+    payload["favorite_genre"] = "lofi"
+    payload["avoid_genres"] = ["lofi", "pop"]
+    llm = _CountingStub([json.dumps(payload)])
+
+    profile, warnings = extract_profile(_INPUTS, llm)
+
+    assert profile.favorite_genre == "lofi"
+    assert profile.avoid_genres == ["pop"]
+    assert any("favorite_genre" in w for w in warnings)
