@@ -4,11 +4,10 @@ Three top-level tabs cover the full workflow without needing the CLI:
 
 - Recommend: pick a saved profile or preset and get top-k grounded
   recommendations.
-- Build profile: answer the five guided questions plus an optional
-  free-form description; optionally seed from an existing profile
-  or preset; optionally save the result under a name.
-- Manage profiles: view, edit, or delete saved profiles; view presets
-  and use any of them as a build seed.
+- Build profile: answer the three guided questions plus an optional
+  free-form description; optionally save the result under a name.
+- Manage profiles: view, edit, or delete saved profiles; view
+  presets (read-only).
 
 The page is GEMINI_API_KEY-aware: with a key, build_profile and
 recommend issue real LLM calls (cached via CachedLLMClient). Without a
@@ -18,7 +17,6 @@ clear message — extraction and grounded explanations both need an LLM.
 
 from __future__ import annotations
 
-import dataclasses
 import functools
 import json
 import os
@@ -31,12 +29,10 @@ from dotenv import load_dotenv
 
 from src.agents.profile_extractor import ProfileExtractionError
 from src.eval.assertions import assert_build_neighborhood, assert_recommend_structural
-from src.eval.cases import BUILD_CASES, RECOMMEND_CASES, BuildCase
+from src.eval.cases import BuildCase
 from src.eval.harness import (
     EVAL_RESULTS_DIR,
-    BuildEvalResult,
-    RecommendEvalResult,
-    _audit_uncached_calls,
+    _write_artifact,
     run_build_eval,
     run_recommend_eval,
 )
@@ -68,12 +64,22 @@ load_dotenv()
 
 
 # ---------------------------------------------------------------------------
-# Client construction (cached for the session)
+# Client construction
 # ---------------------------------------------------------------------------
 
 
-@st.cache_resource
 def _get_client() -> LLMClient:
+    """Build a fresh client per render.
+
+    Construction is cheap: GeminiClient just stores the API key and
+    lazy-imports google-genai on first call; CachedLLMClient is a thin
+    disk-cache wrapper. Skipping `@st.cache_resource` here avoids a
+    Streamlit hot-reload bug where the cached client gets wedged as a
+    StubLLMClient across module reloads even when the env is set,
+    leaving the sidebar stuck on "Demo mode" until a process restart.
+    The real cache (response-level) lives one layer deeper in
+    CachedLLMClient, keyed on prompt + model + sampling params.
+    """
     key = os.getenv("GEMINI_API_KEY", "").strip()
     if key:
         return CachedLLMClient(GeminiClient(api_key=key))
@@ -97,6 +103,89 @@ def _allowed_genres() -> list[str]:
 @functools.lru_cache(maxsize=1)
 def _allowed_moods() -> list[str]:
     return sorted({s.mood for s in load_songs()})
+
+
+# ---------------------------------------------------------------------------
+# Test-suite introspection (Reliability tab "Code health check" section)
+# ---------------------------------------------------------------------------
+
+
+# Human-readable description per test file. Keys must match filenames in
+# tests/ so the breakdown picks them up automatically when new files land.
+_TEST_DESCRIPTIONS: dict[str, str] = {
+    "test_profiles.py": (
+        "Profile store — save/load/edit round-trips, slug normalization, "
+        "preset registry parity with src/main.py, avoid_genres updates."
+    ),
+    "test_profile_extractor.py": (
+        "Profile extractor — happy path, retry on JSON parse failure, "
+        "numeric clamping, unknown-genre fallback, avoid_genres parsing "
+        "(case-insensitive dedup, invalid-entry drops, favorite/avoid "
+        "contradiction guard), suggested_name sanitization and fallbacks."
+    ),
+    "test_critic.py": (
+        "Critic — faithfulness verdicts, refine adjustments including "
+        "list-typed avoid_genres, parse-failure degrades to ok, range "
+        "clamping, prompt includes the inputs bundle."
+    ),
+    "test_pipeline_integration.py": (
+        "End-to-end build_profile + recommend — extractor→critic loop, "
+        "ambiguous_match cap, empty-input rejection, starting_from seed, "
+        "extractor warnings surfaced, refinement applies avoid_genres."
+    ),
+    "test_recommender.py": (
+        "Scorer + UserProfile — load_songs, type casts, genre/mood/numeric "
+        "weights, avoid_genres hard-zero short-circuit (case-insensitive), "
+        "recommend_songs ranking + k parameter."
+    ),
+    "test_eval_assertions.py": (
+        "Build-eval neighborhood assertion — passes on match, fails on "
+        "missing or extra avoid_genres, case-insensitive set comparison."
+    ),
+    "test_explainer.py": (
+        "Citation-grounded explainer — happy path, malformed JSON fallback, "
+        "fabricated-citation fallback, whitespace/case-tolerant verbatim check."
+    ),
+    "test_kb_retriever.py": (
+        "KB retriever — multi-source lookup across genre + mood + song notes."
+    ),
+    "test_llm_client.py": (
+        "LLM client — disk cache hit/miss accounting, StubLLMClient behavior, "
+        "missing GEMINI_API_KEY raises a clear error, retry-with-backoff on "
+        "rate-limit (429) errors with exponential delay."
+    ),
+    "test_llm_parsing.py": (
+        "JSON-fence stripping — handles ```json wrappers Gemma occasionally adds."
+    ),
+}
+
+
+@functools.lru_cache(maxsize=1)
+def _test_breakdown() -> tuple[tuple[str, int, str], ...]:
+    """Walk tests/*.py, count `def test_` lines per file, pair with descriptions."""
+    tests_dir = Path(__file__).resolve().parent / "tests"
+    rows: list[tuple[str, int, str]] = []
+    for path in sorted(tests_dir.glob("test_*.py")):
+        count = sum(
+            1
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if line.lstrip().startswith("def test_")
+        )
+        if count == 0:
+            continue
+        rows.append(
+            (path.name, count, _TEST_DESCRIPTIONS.get(path.name, "(no description)"))
+        )
+    return tuple(rows)
+
+
+def _parse_pytest_summary(output: str) -> str:
+    """Pull pytest's last status line (e.g. '87 passed in 0.06s') out of -q output."""
+    for line in reversed(output.strip().splitlines()):
+        stripped = line.strip()
+        if any(token in stripped for token in ("passed", "failed", "error")):
+            return stripped
+    return ""
 
 
 # ---------------------------------------------------------------------------
@@ -340,7 +429,7 @@ def _render_recommend_tab(client: LLMClient, show_debug: bool) -> None:
 
     cols = st.columns([1, 3])
     k = cols[0].slider(
-        "How many picks", min_value=1, max_value=10, value=5,
+        "How many songs", min_value=1, max_value=10, value=5,
         key="recommend_k"
     )
     recommend_clicked = cols[1].button(
@@ -419,48 +508,125 @@ def _render_recommend_tab(client: LLMClient, show_debug: bool) -> None:
 _QUESTIONS = (
     ("activity",
      "1. What are you usually doing when you listen, or what do you want this music for?"),
-    ("feeling",
-     "2. How do you want this music to make you feel?"),
-    ("movement",
-     "3. Are you in the mood to move, sit still, or somewhere in between?"),
     ("instruments",
-     "4. Are you drawn to acoustic instruments, electronic/synthesized sounds, or a mix?"),
+     "2. Are you drawn to acoustic instruments, electronic/synthesized sounds, or a mix?"),
     ("genres",
-     "5. Any genres you specifically want, or any you want to avoid?"),
+     "3. Any genres you specifically want, or any you want to avoid?"),
 )
 
 
+@st.dialog("Profile name already exists")
+def _overwrite_dialog() -> None:
+    """Confirmation modal shown when a save collides with an existing name.
+
+    Reads the pending profile + name from session state. The submit
+    handler in `_render_build_tab` populates these on a `ProfileExistsError`
+    and calls `st.rerun`, which fires this dialog on the next render.
+    """
+    name = st.session_state.get("pending_save_name", "")
+    profile = st.session_state.get("pending_save_profile")
+    auto_named = bool(st.session_state.get("pending_save_auto_named", False))
+
+    if profile is None:
+        st.error("No profile in flight to save. Close this and try again.")
+        if st.button("Close", key="ow_dialog_close_err"):
+            st.rerun()
+        return
+
+    origin = "auto-picked this name" if auto_named else "asked to save under this name"
+    st.markdown(
+        f"A Vibe Profile called **{name}** already exists, and "
+        f"SongFinder {origin}. What would you like to do?"
+    )
+
+    if st.button(
+        f"Overwrite the existing **{name}**",
+        key="ow_dialog_overwrite",
+        type="primary",
+        use_container_width=True,
+    ):
+        try:
+            save_profile(name, profile, overwrite=True)
+            st.session_state["last_build_save_status"] = (
+                f"Saved as **{name}** (overwrote the existing profile)."
+            )
+            st.session_state["pending_recommend_label"] = f"Saved: {name}"
+        except Exception as exc:
+            st.session_state["last_build_save_status"] = (
+                f"Save failed: {exc.__class__.__name__}: {exc}"
+            )
+        st.session_state.pop("pending_save_name", None)
+        st.session_state.pop("pending_save_profile", None)
+        st.session_state.pop("pending_save_auto_named", None)
+        st.rerun()
+
+    st.markdown("---")
+    st.caption("Or save under a different name:")
+    new_name = st.text_input(
+        "New name",
+        key="ow_dialog_rename_input",
+        label_visibility="collapsed",
+        placeholder="e.g. Quiet Reading Hours",
+    )
+    if st.button(
+        "Save under this new name",
+        key="ow_dialog_rename_btn",
+        use_container_width=True,
+    ):
+        candidate = new_name.strip()
+        if not candidate:
+            st.warning("Type a name first.")
+        else:
+            try:
+                save_profile(candidate, profile, overwrite=False)
+                st.session_state["last_build_save_status"] = (
+                    f"Saved as **{candidate}**."
+                )
+                st.session_state["pending_recommend_label"] = f"Saved: {candidate}"
+                st.session_state.pop("pending_save_name", None)
+                st.session_state.pop("pending_save_profile", None)
+                st.session_state.pop("pending_save_auto_named", None)
+                st.rerun()
+            except ProfileExistsError:
+                # Collision again — keep the dialog open with the new name.
+                st.session_state["pending_save_name"] = candidate
+                st.session_state["pending_save_auto_named"] = False
+                st.warning(
+                    f"**{candidate}** also exists. Try yet another name "
+                    "or overwrite the original above."
+                )
+
+    st.markdown("---")
+    if st.button(
+        "Cancel — don't save",
+        key="ow_dialog_cancel",
+        use_container_width=True,
+    ):
+        st.session_state["last_build_save_status"] = (
+            "Save cancelled. The profile is still here in the preview "
+            "below; you can rebuild with a different name to save it."
+        )
+        st.session_state.pop("pending_save_name", None)
+        st.session_state.pop("pending_save_profile", None)
+        st.session_state.pop("pending_save_auto_named", None)
+        st.rerun()
+
+
 def _render_build_tab(client: LLMClient, show_debug: bool) -> None:
+    # If a previous submit hit a name collision, show the confirmation
+    # dialog before anything else this render.
+    if (
+        st.session_state.get("pending_save_profile") is not None
+        and st.session_state.get("pending_save_name")
+    ):
+        _overwrite_dialog()
+
     st.markdown(
         "Tell SongFinder about your vibe — answer any of the questions "
         "below or just describe what you want in your own words. "
         "SongFinder builds a Vibe Profile from your answers and "
         "double-checks itself before saving."
     )
-
-    seed_options = _profile_picker_options(include_none=True)
-    seed_labels = [label for label, _kind, _name in seed_options]
-    # Same pending-slot pattern as the recommend picker: cross-tab handoffs
-    # write to `pending_build_seed_label` and we transfer here, before the
-    # seed selectbox is instantiated.
-    pending_seed = st.session_state.pop("pending_build_seed_label", None)
-    if pending_seed in seed_labels:
-        st.session_state["build_seed_label"] = pending_seed
-    # Reset stored seed if it points to a profile that no longer exists.
-    if st.session_state.get("build_seed_label") not in seed_labels:
-        st.session_state["build_seed_label"] = seed_labels[0]
-    seed_label = st.selectbox(
-        "Start from an existing profile or preset (optional)",
-        seed_labels,
-        key="build_seed_label",
-        help=(
-            "Pick one and SongFinder uses it as a starting point — you "
-            "only need to describe what you want to change."
-        ),
-    )
-    seed_kind = next(k for label, k, _ in seed_options if label == seed_label)
-    seed_name = next(n for label, _, n in seed_options if label == seed_label)
-    seed_profile = _resolve_picked(seed_kind, seed_name) if seed_kind != "none" else None
 
     with st.form("build_form"):
         answers: dict[str, str] = {}
@@ -472,22 +638,14 @@ def _render_build_tab(client: LLMClient, show_debug: bool) -> None:
             height=80,
         )
 
-        cols = st.columns([2, 1])
-        save_name = cols[0].text_input(
+        save_name = st.text_input(
             "Save as (optional)",
             key="build_save_name",
             help=(
-                "Give it a name to save it. Leave blank to just preview "
-                "without saving."
-            ),
-        )
-        no_overwrite = cols[1].checkbox(
-            "Don't overwrite",
-            value=False,
-            key="build_no_overwrite",
-            help=(
-                "If a Vibe Profile with this name already exists, "
-                "refuse to save instead of replacing it."
+                "Give it a name to save it. Leave blank and SongFinder "
+                "will pick a short evocative name (e.g. \"Late Night "
+                "Study\") for you. If the name you pick already exists, "
+                "you'll be asked whether to overwrite or rename."
             ),
         )
 
@@ -498,8 +656,6 @@ def _render_build_tab(client: LLMClient, show_debug: bool) -> None:
     if submitted:
         inputs = BuildInputs(
             activity=answers["activity"] or None,
-            feeling=answers["feeling"] or None,
-            movement=answers["movement"] or None,
             instruments=answers["instruments"] or None,
             genres=answers["genres"] or None,
             description=description or None,
@@ -522,9 +678,7 @@ def _render_build_tab(client: LLMClient, show_debug: bool) -> None:
                 "and turns it into a 7-feature Vibe Profile."
             )
             try:
-                build_result = build_profile(
-                    inputs, client, starting_from=seed_profile
-                )
+                build_result = build_profile(inputs, client)
             except EmptyBuildInputsError as exc:
                 status.update(label="Need at least one answer", state="error")
                 st.session_state["last_build_error"] = str(exc)
@@ -585,27 +739,50 @@ def _render_build_tab(client: LLMClient, show_debug: bool) -> None:
             st.session_state["last_build"] = build_result
             st.session_state.pop("last_build_error", None)
 
-        # Optional save
-        if save_name.strip():
-            try:
-                save_profile(
-                    save_name,
-                    build_result.candidate_profile,
-                    overwrite=not no_overwrite,
-                )
-                st.session_state["last_build_save_status"] = (
-                    f"Saved as **{save_name}**."
-                )
-            except ProfileExistsError as exc:
-                st.session_state["last_build_save_status"] = (
-                    f"Not saved: {exc}. Uncheck 'Don't overwrite' to replace it."
-                )
-            except Exception as exc:
-                st.session_state["last_build_save_status"] = (
-                    f"Save failed: {exc.__class__.__name__}: {exc}"
-                )
-        else:
+        # Determine the name to save under. If the listener gave one, use
+        # it. Otherwise use the name the extractor suggested in the same
+        # build call (no extra round trip).
+        chosen_name = save_name.strip()
+        auto_named = False
+        if not chosen_name:
+            chosen_name = build_result.suggested_name
+            auto_named = True
+
+        # Try to save. On a name collision, stash everything in session
+        # state and pop a confirmation dialog on the next render.
+        try:
+            save_profile(
+                chosen_name,
+                build_result.candidate_profile,
+                overwrite=False,
+            )
+            suffix = " (auto-named)" if auto_named else ""
+            st.session_state["last_build_save_status"] = (
+                f"Saved as **{chosen_name}**{suffix}."
+            )
+            # Pre-select the freshly saved profile in the Song Finder
+            # picker so it's the active choice if the user switches tabs.
+            # The picker consumes `pending_recommend_label` before its
+            # selectbox is instantiated (same pattern the cross-tab
+            # buttons on My Profiles use).
+            st.session_state["pending_recommend_label"] = f"Saved: {chosen_name}"
+            st.session_state.pop("pending_save_profile", None)
+            st.session_state.pop("pending_save_name", None)
+            st.session_state.pop("pending_save_auto_named", None)
+            # Force a second rerun so the Song Finder tab (which renders
+            # before the Build tab in main()) picks up the pending label
+            # in this turn instead of next user interaction.
+            st.rerun()
+        except ProfileExistsError:
+            st.session_state["pending_save_name"] = chosen_name
+            st.session_state["pending_save_profile"] = build_result.candidate_profile
+            st.session_state["pending_save_auto_named"] = auto_named
             st.session_state.pop("last_build_save_status", None)
+            st.rerun()
+        except Exception as exc:
+            st.session_state["last_build_save_status"] = (
+                f"Save failed: {exc.__class__.__name__}: {exc}"
+            )
 
     if "last_build_error" in st.session_state:
         st.error(st.session_state["last_build_error"])
@@ -797,27 +974,18 @@ def _render_preset_card(slug: str) -> None:
         with st.expander("Show fields", expanded=False):
             _render_profile_table(profile)
 
-        action_cols = st.columns(2)
-        if action_cols[0].button(
+        if st.button(
             "Find songs with this", key=f"preset_use_{slug}", use_container_width=True
         ):
             st.session_state["pending_recommend_label"] = f"Preset: {display}"
             st.session_state["pending_recommend_announce"] = display
             st.rerun()
 
-        if action_cols[1].button(
-            "Use as starting point", key=f"preset_seed_{slug}", use_container_width=True
-        ):
-            st.session_state["pending_build_seed_label"] = f"Preset: {display}"
-            st.session_state["pending_build_seed_announce"] = display
-            st.rerun()
-
 
 def _render_manage_tab() -> None:
     st.markdown(
         "Your saved Vibe Profiles live here. The starter presets are "
-        "read-only — use one as a starting point if you want to build a "
-        "tweaked version."
+        "read-only references."
     )
 
     # Surface confirmation messages from cross-tab pre-selection (the
@@ -826,16 +994,8 @@ def _render_manage_tab() -> None:
     if rec_announce:
         st.success(
             f"Picked **{rec_announce}** for song recommendations. "
-            f"Head to the **Find Songs** tab and hit *Recommend*."
+            f"Head to the **Song Finder** tab and hit *Recommend*."
         )
-    seed_announce = st.session_state.pop("pending_build_seed_announce", None)
-    if seed_announce:
-        st.success(
-            f"Using **{seed_announce}** as the starting point for your "
-            f"next build. Head to the **Build Vibe Profile** tab and "
-            f"describe what you want to change."
-        )
-
     saved = list_profiles()
     st.markdown("### Your saved Vibe Profiles")
     if not saved:
@@ -856,78 +1016,6 @@ def _render_manage_tab() -> None:
 # ---------------------------------------------------------------------------
 # Tab 4 — Eval & Tests
 # ---------------------------------------------------------------------------
-
-
-def _build_eval_to_dict(b: BuildEvalResult) -> dict[str, Any]:
-    """Convert a live BuildEvalResult to the same JSON shape the harness
-    writes to disk, so one renderer handles stored + live results.
-    """
-    return {
-        "case": {
-            "name": b.case.name,
-            "category": b.case.category,
-            "expected_profile": dataclasses.asdict(b.case.expected_profile),
-            "tempo_tolerance_bpm": b.case.tempo_tolerance_bpm,
-            "numeric_tolerance": b.case.numeric_tolerance,
-            "inputs": dataclasses.asdict(b.case.inputs),
-        },
-        "result": {
-            "inputs": dataclasses.asdict(b.result.inputs),
-            "extracted_profile": dataclasses.asdict(b.result.extracted_profile),
-            "candidate_profile": dataclasses.asdict(b.result.candidate_profile),
-            "refinement_history": [
-                {
-                    "iter_index": s.iter_index,
-                    "verdict": s.verdict,
-                    "candidate_after_iter": s.candidate_after_iter,
-                    "adjustments_applied": s.adjustments_applied,
-                    "reason": s.reason,
-                }
-                for s in b.result.refinement_history
-            ],
-            "ambiguous_match": b.result.ambiguous_match,
-            "extractor_warnings": list(b.result.extractor_warnings),
-            "cache_stats": b.result.cache_stats,
-        },
-        "passed": b.passed,
-        "failures": list(b.failures),
-    }
-
-
-def _recommend_eval_to_dict(r: RecommendEvalResult) -> dict[str, Any]:
-    return {
-        "preset_name": r.preset_name,
-        "result": {
-            "profile": dataclasses.asdict(r.result.profile),
-            "recommendations": [
-                {
-                    "song_id": rec.song.id,
-                    "title": rec.song.title,
-                    "artist": rec.song.artist,
-                    "genre": rec.song.genre,
-                    "mood": rec.song.mood,
-                    "score": rec.score,
-                    "reasons": list(rec.reasons),
-                }
-                for rec in r.result.recommendations
-            ],
-            "explanations": [
-                {
-                    "song_id": e.song_id,
-                    "text": e.text,
-                    "cited_snippets": list(e.cited_snippets),
-                    "fallback_reason": e.fallback_reason,
-                }
-                for e in r.result.explanations
-            ],
-            "cache_stats": r.result.cache_stats,
-        },
-        "structural_pass": r.structural_pass,
-        "structural_failures": list(r.structural_failures),
-        "self_critique_score": r.self_critique_score,
-        "self_critique_pass": r.self_critique_pass,
-        "self_critique_reason": r.self_critique_reason,
-    }
 
 
 def _render_build_scorecard_row(b: dict[str, Any]) -> None:
@@ -1066,8 +1154,8 @@ def _render_eval_scorecards(payload: dict[str, Any]) -> None:
         st.warning(
             "This past run is from an older version of SongFinder and "
             "doesn't split builder tests and recommender tests "
-            "separately. Use **Run a fresh test** below to produce "
-            "results in the current format."
+            "separately. Run the harness above to produce results in "
+            "the current format."
         )
         if timestamp:
             st.caption(f"Legacy run timestamp: `{timestamp}`")
@@ -1182,92 +1270,32 @@ def _render_eval_tab(client: LLMClient, show_debug: bool) -> None:
         "rate its own picks against the profile."
     )
     st.markdown(
-        "Below you can preview cost, view past test runs, run a fresh "
-        "test, or run the fast offline code tests."
+        "Run the harness against the live system, browse stored results "
+        "from earlier runs, or run the fast offline code tests."
     )
 
-    # ----- Section 1: Cost audit -----
+    # ----- Live runner -----
     st.divider()
-    st.markdown("### Preview the cost first")
+    st.markdown("### Run the evaluation + reliability harness")
     st.caption(
-        "Estimates how many API calls a fresh test run would make. "
-        "This check itself costs nothing."
+        "Feeds five hand-authored listener personas through the profile "
+        "builder, runs SongFinder against each of the five starter "
+        "presets, and scores both — neighborhood checks for the builder, "
+        "structural rules plus an LLM self-critique for SongFinder."
     )
-    if st.button("Preview cost", key="eval_cost_btn"):
-        misses = _audit_uncached_calls(
-            BUILD_CASES, RECOMMEND_CASES, GeminiClient.MODEL
-        )
-        if misses == 0:
-            st.success(
-                "All test calls are already cached — a fresh run would "
-                "make 0 API calls."
-            )
-        else:
-            st.info(
-                f"A fresh run would make about {misses} API calls "
-                f"(upper bound). Use the live runner below to actually run."
-            )
-
-    # ----- Section 2: Stored results viewer -----
-    st.divider()
-    st.markdown("### Past test runs")
-    artifacts = sorted(
-        EVAL_RESULTS_DIR.glob("*.json"), reverse=True
-    ) if EVAL_RESULTS_DIR.exists() else []
-
-    if not artifacts:
-        st.info(
-            "No past test runs saved yet. Use the live runner below to "
-            "create one."
-        )
-    else:
-        cols = st.columns([4, 1])
-        choice = cols[0].selectbox(
-            "Pick a past run",
-            artifacts,
-            format_func=lambda p: p.stem,
-            key="eval_artifact_pick",
-        )
-        if cols[1].button(
-            "Load", key="eval_artifact_load", use_container_width=True
-        ):
-            try:
-                payload = json.loads(choice.read_text(encoding="utf-8"))
-                st.session_state["eval_loaded_payload"] = payload
-                st.session_state["eval_loaded_path"] = choice.name
-            except Exception as exc:
-                st.error(f"Couldn't load: {exc.__class__.__name__}: {exc}")
-
-        loaded = st.session_state.get("eval_loaded_payload")
-        if loaded is not None:
-            st.caption(
-                f"Showing: `{st.session_state.get('eval_loaded_path', '')}`"
-            )
-            _render_eval_scorecards(loaded)
-
-    # ----- Section 3: Live runner -----
-    st.divider()
-    st.markdown("### Run a fresh test")
     if not _is_online(client):
         st.warning(
-            "Demo mode — set `GEMINI_API_KEY` in `.env` to run a fresh "
-            "test. The cost preview and past runs above work without "
-            "an API key."
+            "Demo mode — set `GEMINI_API_KEY` in `.env` to run the "
+            "harness. Stored results below work without an API key."
         )
         st.button(
-            "Run fresh test", type="primary", disabled=True,
+            "Run harness", type="primary", disabled=True,
             key="eval_live_run_disabled",
         )
     else:
-        confirmed = st.checkbox(
-            "Yes, run real API calls (uses Gemini quota)",
-            value=False,
-            key="eval_live_confirm",
-        )
         run_clicked = st.button(
-            "Run fresh test",
+            "Run harness",
             type="primary",
-            disabled=not confirmed,
             key="eval_live_run",
         )
         if run_clicked:
@@ -1324,37 +1352,92 @@ def _render_eval_tab(client: LLMClient, show_debug: bool) -> None:
                     f"passed the self-review."
                 )
 
-                status.write("**Building results display...**")
-                payload = {
-                    "timestamp": "live (this session)",
-                    "build_results": [
-                        _build_eval_to_dict(b) for b in build_results
-                    ],
-                    "recommend_results": [
-                        _recommend_eval_to_dict(r) for r in rec_results
-                    ],
-                }
-                st.session_state["eval_live_payload"] = payload
+                status.write("**Saving the run...**")
+                # Same persistence path the CLI harness uses, so the JSON
+                # the UI writes is identical to a CLI-generated artifact
+                # and shows up in the "Past harness runs" picker below.
+                artifact_path = _write_artifact(build_results, rec_results)
+                payload = json.loads(artifact_path.read_text(encoding="utf-8"))
+                st.session_state["eval_loaded_payload"] = payload
+                st.session_state["eval_loaded_path"] = artifact_path.name
                 status.update(label="Tests complete", state="complete")
+                st.success(
+                    f"Run saved to `{artifact_path.name}`. Showing it now "
+                    f"in **Past harness runs** below."
+                )
 
-        live_payload = st.session_state.get("eval_live_payload")
-        if live_payload is not None:
-            st.markdown("#### Live test results (this session)")
-            _render_eval_scorecards(live_payload)
+    # ----- Stored results viewer -----
+    st.divider()
+    st.markdown("### Past harness runs")
+    st.caption(
+        "Each completed harness run is saved as a JSON artifact. Pick "
+        "one to review the scorecards without re-running the live "
+        "system."
+    )
+    artifacts = sorted(
+        EVAL_RESULTS_DIR.glob("*.json"), reverse=True
+    ) if EVAL_RESULTS_DIR.exists() else []
 
-    # ----- Section 4: Unit tests -----
+    if not artifacts:
+        st.info(
+            "No past harness runs saved yet. Use the live runner above "
+            "to create one."
+        )
+    else:
+        cols = st.columns([4, 1])
+        choice = cols[0].selectbox(
+            "Pick a past run",
+            artifacts,
+            format_func=lambda p: p.stem,
+            key="eval_artifact_pick",
+        )
+        if cols[1].button(
+            "Load", key="eval_artifact_load", use_container_width=True
+        ):
+            try:
+                payload = json.loads(choice.read_text(encoding="utf-8"))
+                st.session_state["eval_loaded_payload"] = payload
+                st.session_state["eval_loaded_path"] = choice.name
+            except Exception as exc:
+                st.error(f"Couldn't load: {exc.__class__.__name__}: {exc}")
+
+        loaded = st.session_state.get("eval_loaded_payload")
+        if loaded is not None:
+            st.caption(
+                f"Showing: `{st.session_state.get('eval_loaded_path', '')}`"
+            )
+            _render_eval_scorecards(loaded)
+
+    # ----- Code health check -----
     st.divider()
     st.markdown("### Code health check")
+
+    breakdown = _test_breakdown()
+    total = sum(count for _name, count, _desc in breakdown)
     st.caption(
-        "65 fast offline tests covering all of SongFinder's parts. No API "
-        "calls — uses fake LLM responses. Takes about a second."
+        f"{total} fast offline tests across {len(breakdown)} files, covering "
+        "every layer of SongFinder. No API calls — uses fake LLM responses. "
+        "Runs in about a second."
     )
+
+    with st.expander(
+        f"What gets tested ({total} tests across {len(breakdown)} files)",
+        expanded=False,
+    ):
+        for filename, count, desc in breakdown:
+            st.markdown(f"- **`{filename}`** ({count} tests) — {desc}")
+        st.caption(
+            "Plus two grep-checked invariants: `from google import genai` "
+            "appears in exactly one file (`src/llm/client.py`), and there are "
+            "no `print()` calls in core modules."
+        )
+
     if st.button("Run code tests", key="eval_pytest_btn"):
         repo_root = Path(__file__).resolve().parent
-        with st.spinner("Running 65 tests..."):
+        with st.spinner(f"Running {total} tests..."):
             try:
                 proc = subprocess.run(
-                    [".venv/bin/pytest", "-q", "--no-header"],
+                    [".venv/bin/pytest", "-v", "--no-header", "--tb=short"],
                     capture_output=True,
                     text=True,
                     timeout=120,
@@ -1373,11 +1456,16 @@ def _render_eval_tab(client: LLMClient, show_debug: bool) -> None:
 
         if proc is not None:
             output = (proc.stdout or "") + (proc.stderr or "")
+            summary = _parse_pytest_summary(output)
             if proc.returncode == 0:
-                st.success("✓ All 65 tests passed")
+                st.success(f"✓ {summary or 'All tests passed'}")
             else:
-                st.error(f"Tests failed (exit code {proc.returncode})")
-            st.code(output or "(no output captured)", language="text")
+                st.error(
+                    f"Tests failed (exit code {proc.returncode}): "
+                    f"{summary or '(no summary line found)'}"
+                )
+            with st.expander("Per-test results", expanded=False):
+                st.code(output or "(no output captured)", language="text")
 
 
 # ---------------------------------------------------------------------------
@@ -1398,7 +1486,7 @@ def main() -> None:
     )
 
     rec_tab, build_tab, manage_tab, eval_tab = st.tabs(
-        ["Find Songs", "Build Vibe Profile", "My Profiles", "Reliability"]
+        ["Song Finder", "Build Vibe Profile", "My Profiles", "Reliability"]
     )
 
     with rec_tab:
