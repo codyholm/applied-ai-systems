@@ -7,7 +7,7 @@ Three subcommands:
     python -m src.cli profiles ...   # list / show / edit / delete saved profiles
 
 The `build` subcommand takes one optional flag per BuildInputs field
-(--activity / --feeling / --movement / --instruments / --genres /
+(--activity / --instruments / --genres /
 --description). At least one must be non-blank or argparse exits with a
 clear error. `--save NAME` persists the candidate profile under NAME.
 `--from-profile NAME` and `--from-preset NAME` are mutually exclusive
@@ -164,8 +164,6 @@ def _render_recommendations(rec: RecommendationResult) -> str:
 def _inputs_from_args(args: argparse.Namespace) -> BuildInputs:
     return BuildInputs(
         activity=args.activity,
-        feeling=args.feeling,
-        movement=args.movement,
         instruments=args.instruments,
         genres=args.genres,
         description=args.description,
@@ -195,8 +193,8 @@ def _cmd_build(args: argparse.Namespace) -> int:
     inputs = _inputs_from_args(args)
     if not inputs.has_minimum():
         print(
-            "build: provide at least one of --activity / --feeling / --movement /\n"
-            "       --instruments / --genres / --description (or pass --help).",
+            "build: provide at least one of --activity / --instruments /\n"
+            "       --genres / --description (or pass --help).",
             file=sys.stderr,
         )
         return 2
@@ -412,14 +410,12 @@ def _build_parser() -> argparse.ArgumentParser:
         "build",
         help="Build a UserProfile from labeled NL inputs.",
         description=(
-            "Build a UserProfile from any combination of the five guided "
+            "Build a UserProfile from any combination of the three guided "
             "questions plus an optional free-form description. At least one "
             "field must be non-blank."
         ),
     )
     p_build.add_argument("--activity",    help="What you're doing or want this music for")
-    p_build.add_argument("--feeling",     help="How you want this music to make you feel")
-    p_build.add_argument("--movement",    help="In the mood to move, sit still, or in between")
     p_build.add_argument("--instruments", help="Acoustic, electronic, or a mix")
     p_build.add_argument("--genres",      help="Genres you want or want to avoid")
     p_build.add_argument("--description", help="Free-form mood description")

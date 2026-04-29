@@ -3,7 +3,7 @@
 Two collections, run independently by the eval harness:
 
 - BUILD_CASES: 5 cases feeding the build_profile pipeline. Each case
-  carries a typed BuildInputs bundle (the listener's five question-
+  carries a typed BuildInputs bundle (the listener's three question-
   answers + free-form description) and an expected UserProfile authored
   by hand. The cases describe FRESH listener personas — they deliberately
   don't paraphrase the existing presets. Build-eval verifies the build
@@ -34,7 +34,7 @@ class BuildCase:
 
     Attributes:
       name: short human-readable identifier (e.g. 'jazz_focus').
-      inputs: the listener's BuildInputs bundle (5 questions + description).
+      inputs: the listener's BuildInputs bundle (3 questions + description).
       expected_profile: hand-authored ground-truth UserProfile that the
         build pipeline should produce for this listener. Neighborhood
         check happens against this, not against a preset.
@@ -62,8 +62,6 @@ BUILD_CASES: list[BuildCase] = [
         name="jazz_focus",
         inputs=BuildInputs(
             activity="late-night studying or quiet writing",
-            feeling="calm and focused, mellow",
-            movement="sitting still",
             instruments="real instruments — jazz quartet, warm bass",
             genres="jazz",
             description=(
@@ -85,8 +83,6 @@ BUILD_CASES: list[BuildCase] = [
         name="hip_hop_cardio",
         inputs=BuildInputs(
             activity="treadmill cardio, sprint intervals",
-            feeling="hyped up, ready to push hard",
-            movement="moving fast and hard",
             instruments="heavy beats, sub bass, hip hop production",
             genres="hip hop",
             description=(
@@ -108,13 +104,11 @@ BUILD_CASES: list[BuildCase] = [
         name="synthwave_drive",
         inputs=BuildInputs(
             activity="long evening drives on the highway",
-            feeling="nostalgic, dreamy, slightly melancholy",
-            movement="still — just driving",
             instruments="synthesizers, retro electronic production",
             genres="synthwave",
             description=(
                 "Dreamy synthwave for night drives — moody, mid-tempo, "
-                "washes of analog synth, neon-lit atmosphere."
+                "washes of analog synth, neon-lit atmosphere, nostalgic."
             ),
         ),
         expected_profile=UserProfile(
@@ -131,14 +125,13 @@ BUILD_CASES: list[BuildCase] = [
         name="acoustic_morning",
         inputs=BuildInputs(
             activity="slow weekend mornings, making coffee",
-            feeling="warm and content, gentle",
-            movement="moving slowly, unhurried",
             instruments="fingerpicked acoustic guitar, soft vocals",
             genres="acoustic, definitely no electronic or synthwave",
             description=(
-                "Quiet acoustic for slow mornings — fingerpicked guitar, "
-                "gentle vocals, vinyl warmth, no drums. Please avoid anything "
-                "electronic or synthwave; I want it to feel unplugged."
+                "Quiet, warm acoustic for slow mornings — fingerpicked "
+                "guitar, gentle vocals, vinyl warmth, no drums, low "
+                "energy. Please avoid anything electronic or synthwave; "
+                "I want it to feel unplugged."
             ),
         ),
         expected_profile=UserProfile(
@@ -158,14 +151,12 @@ BUILD_CASES: list[BuildCase] = [
         # the extractor honors a request at the catalog's outer edge.
         name="ambient_meditation",
         inputs=BuildInputs(
-            activity="meditation and deep breathing exercises",
-            feeling="tranquil, almost asleep, no thinking",
-            movement="completely still",
+            activity="meditation and deep breathing, completely still",
             instruments="drone, atmospheric pads, no percussion at all",
             genres="ambient",
             description=(
                 "Very slow ambient drone for meditation — minimal, no "
-                "beat, deeply still, like floating."
+                "beat, deeply still, tranquil, like floating."
             ),
         ),
         expected_profile=UserProfile(

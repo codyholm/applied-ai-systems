@@ -28,7 +28,6 @@ CANDIDATE = UserProfile(
 
 _INPUTS = BuildInputs(
     activity="focused writing session",
-    feeling="calm and quiet",
     description="Quiet, mellow lofi to focus on writing.",
 )
 
@@ -65,7 +64,7 @@ def test_critic_prompt_includes_inputs_bundle():
     assert "Description" in prompt
     assert "Quiet, mellow lofi" in prompt
     # Fields the listener didn't fill should not appear under their labels.
-    assert "Movement" not in prompt
+    assert "Instruments" not in prompt
     assert "Genres" not in prompt
 
 

@@ -61,11 +61,13 @@ class EmptyBuildInputsError(ValueError):
 
 @dataclass
 class BuildInputs:
-    """Hybrid input bundle: 5 question answers + an optional free-form description.
+    """Hybrid input bundle: 3 question answers + an optional free-form description.
 
-    Each field is a short natural-language string. The five questions
-    map onto the five non-description fields per spec D37. The
-    description field carries the listener's free-form mood description.
+    Each field is a short natural-language string. The three questions
+    cover what the listener is doing (activity), what kinds of sounds
+    they want (instruments), and which genres they want or want to avoid
+    (genres). The description field carries any free-form text the
+    listener wants to add.
 
     Validation gate: at least one field must be non-blank before the
     bundle is sent to the build pipeline (build_profile raises
@@ -73,19 +75,16 @@ class BuildInputs:
     """
 
     activity:    str | None = None
-    feeling:     str | None = None
-    movement:    str | None = None
     instruments: str | None = None
     genres:      str | None = None
     description: str | None = None
 
     def is_empty(self) -> bool:
-        """All six fields are None or whitespace-only."""
+        """All four fields are None or whitespace-only."""
         return not any(
             (v or "").strip()
             for v in (
-                self.activity, self.feeling, self.movement,
-                self.instruments, self.genres, self.description,
+                self.activity, self.instruments, self.genres, self.description,
             )
         )
 
@@ -113,7 +112,8 @@ class ProfileBuildResult:
     (final, possibly refined), the original extraction before refinement,
     the refinement loop's history, the ambiguous flag (True iff the loop
     hit the cap without the critic agreeing), any extractor warnings
-    (e.g. unknown genre fallbacks), and cache stats.
+    (e.g. unknown genre fallbacks), the suggested save-as name the
+    extractor proposed in the same response, and cache stats.
     """
 
     inputs: BuildInputs
@@ -122,6 +122,7 @@ class ProfileBuildResult:
     refinement_history: list[RefinementStep] = field(default_factory=list)
     ambiguous_match: bool = False
     extractor_warnings: list[str] = field(default_factory=list)
+    suggested_name: str = "My Vibe Profile"
     cache_stats: dict[str, int] | None = None
 
 
@@ -190,7 +191,7 @@ def build_profile(
             "(answer one question or fill the description)."
         )
 
-    extracted_profile, extractor_warnings = extract_profile(
+    extracted_profile, extractor_warnings, suggested_name = extract_profile(
         inputs, llm, starting_from=starting_from
     )
 
@@ -224,6 +225,7 @@ def build_profile(
         refinement_history=refinement_history,
         ambiguous_match=ambiguous_match,
         extractor_warnings=extractor_warnings,
+        suggested_name=suggested_name,
         cache_stats=_cache_stats(llm),
     )
 

@@ -23,14 +23,14 @@ VALID_PROFILE_JSON = json.dumps(
         "target_danceability": 0.5,
         "target_acousticness": 0.8,
         "avoid_genres": [],
+        "suggested_name": "Late Night Study",
     }
 )
 
 
 _INPUTS = BuildInputs(
     activity="studying late at night",
-    feeling="calm and focused",
-    description="quiet headphones-on stuff with a vinyl warmth",
+    description="quiet headphones-on stuff with a vinyl warmth, calm and focused",
 )
 
 
@@ -51,7 +51,7 @@ class _CountingStub(LLMClient):
 def test_extract_happy_path():
     llm = _CountingStub([VALID_PROFILE_JSON])
 
-    profile, warnings = extract_profile(_INPUTS, llm)
+    profile, warnings, _name = extract_profile(_INPUTS, llm)
 
     assert profile.favorite_genre == "lofi"
     assert profile.favorite_mood == "chill"
@@ -65,8 +65,8 @@ def test_extract_prompt_includes_only_filled_fields():
     inputs = BuildInputs(
         activity="studying",
         description="quiet vinyl",
-        feeling=None,
-        movement="   ",  # whitespace-only is treated as blank
+        instruments=None,
+        genres="   ",  # whitespace-only is treated as blank
     )
     llm = _CountingStub([VALID_PROFILE_JSON])
 
@@ -77,8 +77,8 @@ def test_extract_prompt_includes_only_filled_fields():
     assert "studying" in prompt
     assert "Description" in prompt
     assert "quiet vinyl" in prompt
-    assert "Feeling" not in prompt
-    assert "Movement" not in prompt
+    assert "Instruments" not in prompt
+    assert "Genres" not in prompt
 
 
 def test_extract_with_starting_from_includes_seed_block():
@@ -104,7 +104,7 @@ def test_extract_with_starting_from_includes_seed_block():
 def test_extract_retries_once_on_parse_failure():
     llm = _CountingStub(["not json", VALID_PROFILE_JSON])
 
-    profile, _warnings = extract_profile(_INPUTS, llm)
+    profile, _warnings, _name = extract_profile(_INPUTS, llm)
 
     assert profile.favorite_genre == "lofi"
     assert len(llm.prompts) == 2
@@ -131,11 +131,12 @@ def test_extract_clamps_out_of_range_values():
             "target_danceability": 2.0,
             "target_acousticness": -0.2,
             "avoid_genres": [],
+            "suggested_name": "Test Run",
         }
     )
     llm = _CountingStub([out_of_range])
 
-    profile, _warnings = extract_profile(_INPUTS, llm)
+    profile, _warnings, _name = extract_profile(_INPUTS, llm)
 
     assert profile.target_energy == 1.0
     assert profile.target_tempo_bpm == 40.0
@@ -150,7 +151,7 @@ def test_extract_falls_back_unknown_genre_and_records_warning(caplog):
     llm = _CountingStub([json.dumps(payload)])
 
     with caplog.at_level("WARNING"):
-        profile, warnings = extract_profile(_INPUTS, llm)
+        profile, warnings, _name = extract_profile(_INPUTS, llm)
 
     # The fallback is the first allowed genre alphabetically.
     assert profile.favorite_genre == "acoustic"
@@ -169,7 +170,7 @@ def test_extract_parses_avoid_genres_list():
     payload["avoid_genres"] = ["pop", "rock"]
     llm = _CountingStub([json.dumps(payload)])
 
-    profile, warnings = extract_profile(_INPUTS, llm)
+    profile, warnings, _name = extract_profile(_INPUTS, llm)
 
     assert profile.avoid_genres == ["pop", "rock"]
     assert warnings == []
@@ -180,7 +181,7 @@ def test_extract_drops_invalid_avoid_genres_with_warning():
     payload["avoid_genres"] = ["pop", "drum and bass"]
     llm = _CountingStub([json.dumps(payload)])
 
-    profile, warnings = extract_profile(_INPUTS, llm)
+    profile, warnings, _name = extract_profile(_INPUTS, llm)
 
     assert profile.avoid_genres == ["pop"]
     assert any("drum and bass" in w for w in warnings)
@@ -191,7 +192,7 @@ def test_extract_avoid_genres_empty_list_no_warning():
     # regression that the empty case produces no spurious warnings.
     llm = _CountingStub([VALID_PROFILE_JSON])
 
-    profile, warnings = extract_profile(_INPUTS, llm)
+    profile, warnings, _name = extract_profile(_INPUTS, llm)
 
     assert profile.avoid_genres == []
     assert warnings == []
@@ -202,7 +203,7 @@ def test_extract_avoid_genres_lowercases_and_dedupes():
     payload["avoid_genres"] = ["Pop", "POP", "rock"]
     llm = _CountingStub([json.dumps(payload)])
 
-    profile, _warnings = extract_profile(_INPUTS, llm)
+    profile, _warnings, _name = extract_profile(_INPUTS, llm)
 
     assert profile.avoid_genres == ["pop", "rock"]
 
@@ -222,8 +223,63 @@ def test_extract_drops_avoid_genre_that_matches_favorite_genre():
     payload["avoid_genres"] = ["lofi", "pop"]
     llm = _CountingStub([json.dumps(payload)])
 
-    profile, warnings = extract_profile(_INPUTS, llm)
+    profile, warnings, _name = extract_profile(_INPUTS, llm)
 
     assert profile.favorite_genre == "lofi"
     assert profile.avoid_genres == ["pop"]
     assert any("favorite_genre" in w for w in warnings)
+
+
+# --- suggested_name ----------------------------------------------------------
+
+
+def test_extract_returns_suggested_name():
+    llm = _CountingStub([VALID_PROFILE_JSON])
+    _profile, _warnings, name = extract_profile(_INPUTS, llm)
+    assert name == "Late Night Study"
+
+
+def test_extract_strips_quotes_and_punctuation_from_suggested_name():
+    payload = json.loads(VALID_PROFILE_JSON)
+    payload["suggested_name"] = '"Quiet Reading Hours."'
+    llm = _CountingStub([json.dumps(payload)])
+    _p, _w, name = extract_profile(_INPUTS, llm)
+    assert name == "Quiet Reading Hours"
+
+
+def test_extract_truncates_long_suggested_name():
+    payload = json.loads(VALID_PROFILE_JSON)
+    payload["suggested_name"] = (
+        "A Very Very Very Very Very Very Long Profile Name For Listening"
+    )
+    llm = _CountingStub([json.dumps(payload)])
+    _p, _w, name = extract_profile(_INPUTS, llm)
+    assert len(name) <= 30
+    assert name == name.strip()
+
+
+def test_extract_default_suggested_name_when_empty():
+    payload = json.loads(VALID_PROFILE_JSON)
+    payload["suggested_name"] = "   "
+    llm = _CountingStub([json.dumps(payload)])
+    _p, _w, name = extract_profile(_INPUTS, llm)
+    assert name == "My Vibe Profile"
+
+
+def test_extract_default_suggested_name_when_non_string():
+    payload = json.loads(VALID_PROFILE_JSON)
+    payload["suggested_name"] = 42
+    llm = _CountingStub([json.dumps(payload)])
+    _p, _w, name = extract_profile(_INPUTS, llm)
+    assert name == "My Vibe Profile"
+
+
+def test_extract_default_suggested_name_when_key_missing():
+    # suggested_name is parsed tolerantly — missing key falls back to
+    # the default rather than raising. Required-key check covers the
+    # other 8 fields.
+    payload = json.loads(VALID_PROFILE_JSON)
+    payload.pop("suggested_name")
+    llm = _CountingStub([json.dumps(payload)])
+    _p, _w, name = extract_profile(_INPUTS, llm)
+    assert name == "My Vibe Profile"

@@ -39,8 +39,6 @@ _NUMERIC_RANGES = {
 
 _INPUT_LABELS: tuple[tuple[str, str], ...] = (
     ("activity",    "Activity (what they're doing or want this music for)"),
-    ("feeling",     "Feeling (how they want this music to make them feel)"),
-    ("movement",    "Movement (in the mood to move, sit still, or in between)"),
     ("instruments", "Instruments (acoustic, electronic, or a mix)"),
     ("genres",      "Genres (specifically wanted or to avoid)"),
     ("description", "Description (free-form mood description)"),
@@ -118,7 +116,7 @@ def critique_extraction(
     """Check whether a candidate UserProfile faithfully encodes the listener's inputs.
 
     Inputs:
-      - inputs: the listener's BuildInputs bundle (5 question answers + description).
+      - inputs: the listener's BuildInputs bundle (3 question answers + description).
       - candidate_profile: the extractor's current proposed UserProfile.
       - llm: an LLMClient.
 

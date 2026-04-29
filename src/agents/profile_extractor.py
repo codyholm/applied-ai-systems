@@ -3,6 +3,7 @@ from __future__ import annotations
 import functools
 import json
 import logging
+import re
 from typing import TYPE_CHECKING
 
 from src.llm.client import LLMClient
@@ -42,6 +43,29 @@ _REQUIRED_KEYS = (
     "avoid_genres",
 )
 
+_DEFAULT_SUGGESTED_NAME = "My Vibe Profile"
+_MAX_SUGGESTED_NAME_LEN = 30
+
+
+def _sanitize_suggested_name(raw) -> str:
+    """Best-effort cleanup of the LLM's suggested_name field.
+
+    Strips quotes, drops disallowed punctuation/emoji, collapses
+    whitespace, and truncates to a sensible length. Returns the default
+    name on any kind of garbage input so the build always has *some*
+    save-as suggestion.
+    """
+    if not isinstance(raw, str):
+        return _DEFAULT_SUGGESTED_NAME
+    cleaned = re.sub(r'[\"\'`]', "", raw)
+    cleaned = re.sub(r"[^A-Za-z0-9\s\-]", "", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    if not cleaned:
+        return _DEFAULT_SUGGESTED_NAME
+    if len(cleaned) > _MAX_SUGGESTED_NAME_LEN:
+        cleaned = cleaned[:_MAX_SUGGESTED_NAME_LEN].rstrip()
+    return cleaned
+
 _RETRY_PREAMBLE = (
     "Your previous response failed JSON parsing. Return only valid JSON "
     "conforming to the schema below.\n\n"
@@ -49,8 +73,6 @@ _RETRY_PREAMBLE = (
 
 _INPUT_LABELS: tuple[tuple[str, str], ...] = (
     ("activity",    "Activity (what they're doing or want this music for)"),
-    ("feeling",     "Feeling (how they want this music to make them feel)"),
-    ("movement",    "Movement (in the mood to move, sit still, or in between)"),
     ("instruments", "Instruments (acoustic, electronic, or a mix)"),
     ("genres",      "Genres (specifically wanted or to avoid)"),
     ("description", "Description (free-form mood description)"),
@@ -159,7 +181,7 @@ def _resolve_allowed_list(
     return result
 
 
-def _parse_payload(payload: dict) -> tuple[UserProfile, list[str]]:
+def _parse_payload(payload: dict) -> tuple[UserProfile, list[str], str]:
     missing = [k for k in _REQUIRED_KEYS if k not in payload]
     if missing:
         raise ProfileExtractionError(f"missing keys in extracted profile: {missing}")
@@ -193,7 +215,8 @@ def _parse_payload(payload: dict) -> tuple[UserProfile, list[str]]:
         "target_acousticness": _clamp(float(payload["target_acousticness"]), 0.0, 1.0),
         "avoid_genres": avoid_genres,
     }
-    return UserProfile.from_dict(resolved), warnings
+    suggested_name = _sanitize_suggested_name(payload.get("suggested_name", ""))
+    return UserProfile.from_dict(resolved), warnings, suggested_name
 
 
 def extract_profile(
@@ -201,14 +224,19 @@ def extract_profile(
     llm: LLMClient,
     *,
     starting_from: UserProfile | None = None,
-) -> tuple[UserProfile, list[str]]:
-    """Extract a UserProfile from a labeled BuildInputs bundle.
+) -> tuple[UserProfile, list[str], str]:
+    """Extract a UserProfile (and a suggested save-as name) from a BuildInputs bundle.
 
     Builds a labeled prompt that includes only the non-blank fields from
     `inputs`, plus an optional starting-profile seed when `starting_from`
-    is provided (re-describe-to-update flow). Returns the profile plus a
-    list of warning strings noting any fallback substitutions made
-    (e.g. unknown genre mapped to default).
+    is provided (re-describe-to-update flow). Returns:
+
+    - the extracted UserProfile
+    - a list of warning strings noting any fallback substitutions made
+      (e.g. unknown genre mapped to default)
+    - a short suggested name for the profile (the LLM proposes one in the
+      same response; the UI uses it when the listener leaves Save-as
+      blank). Falls back to ``"My Vibe Profile"`` on any kind of garbage.
     """
     prompt = _build_prompt(inputs, starting_from=starting_from)
     raw = llm.generate(prompt)

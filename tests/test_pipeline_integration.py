@@ -102,6 +102,7 @@ _EXTRACTOR_JSON = json.dumps(
         "target_danceability": 0.60,
         "target_acousticness": 0.78,
         "avoid_genres": [],
+        "suggested_name": "Late Night Study",
     }
 )
 
@@ -126,8 +127,7 @@ def _explainer_json(song_ids):
 
 _NL_INPUTS = BuildInputs(
     activity="studying late at night",
-    feeling="calm and focused",
-    description="Quiet, headphones-on stuff with a vinyl warmth.",
+    description="Quiet, headphones-on stuff with a vinyl warmth, calm and focused.",
 )
 
 
