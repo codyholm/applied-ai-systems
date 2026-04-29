@@ -5,13 +5,59 @@ import hashlib
 import json
 import logging
 import os
+import random
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-GEMINI_MODEL_NAME = "gemma-3-27b-it"
+GEMINI_MODEL_NAME = "gemma-4-31b-it"
 DEFAULT_CACHE_DIR = Path(__file__).resolve().parent.parent.parent / ".llm_cache"
 
+# Retry policy for the GeminiClient. The free tier on Gemma 4 caps at
+# 15 RPM, so a serial eval run that issues ~20 cold calls will trip 429
+# at least once. Backoff lets the run finish cleanly without manual
+# pacing or chunking.
+_GEMINI_MAX_RETRIES = 5
+_GEMINI_BASE_BACKOFF_SECS = 4.0  # 4s = 15 RPM ceiling
+
 log = logging.getLogger(__name__)
+
+
+def _is_retryable_error(exc: BaseException) -> bool:
+    """Best-effort detection of a transient Gemini failure worth retrying.
+
+    Two categories qualify:
+
+    - Rate-limit / quota: 429 / RESOURCE_EXHAUSTED / "rate limit".
+    - Transient server-side: 500 INTERNAL / 502 / 503 UNAVAILABLE / 504.
+      Gemini occasionally returns 500 INTERNAL ("Internal error
+      encountered") on otherwise-valid requests; backing off and
+      retrying clears these in practice.
+
+    The google-genai SDK surfaces these with varying exception types
+    across versions, so we sniff the string form rather than coupling
+    to a class that may move between releases. Auth, malformed-request,
+    and permanent-quota-exceeded errors don't match either category and
+    propagate immediately.
+    """
+    text = (str(exc) or "").lower()
+    if "429" in text or "resource_exhausted" in text or "resourceexhausted" in text or "rate limit" in text:
+        return True
+    if any(marker in text for marker in (
+        "500 internal",
+        "internal error encountered",
+        "502 ",
+        "503 ",
+        "504 ",
+        "unavailable",
+        "deadline exceeded",
+    )):
+        return True
+    return False
+
+
+# Backwards-compatible alias for any external callers / older tests.
+_is_rate_limit_error = _is_retryable_error
 
 
 class LLMError(Exception):
@@ -85,22 +131,51 @@ class GeminiClient(LLMClient):
         max_output_tokens: int = 1024,
     ) -> str:
         contents = "\n\n".join(part for part in (system, prompt) if part)
-        try:
-            from google.genai import types as gtypes
+        from google.genai import types as gtypes
 
-            config = gtypes.GenerateContentConfig(
-                temperature=temperature,
-                max_output_tokens=max_output_tokens,
-            )
-            response = self._client.models.generate_content(
-                model=GEMINI_MODEL_NAME,
-                contents=contents,
-                config=config,
-            )
-        except Exception as exc:
-            log.exception("GeminiClient.generate failed")
-            raise LLMError(str(exc)) from exc
-        return (getattr(response, "text", None) or "").strip()
+        config = gtypes.GenerateContentConfig(
+            temperature=temperature,
+            max_output_tokens=max_output_tokens,
+        )
+
+        last_exc: BaseException | None = None
+        for attempt in range(_GEMINI_MAX_RETRIES):
+            try:
+                response = self._client.models.generate_content(
+                    model=GEMINI_MODEL_NAME,
+                    contents=contents,
+                    config=config,
+                )
+                return (getattr(response, "text", None) or "").strip()
+            except Exception as exc:
+                last_exc = exc
+                # Retry transient failures (rate limits + 5xx server
+                # errors). Auth / malformed-request errors don't match
+                # and propagate immediately.
+                if not _is_retryable_error(exc):
+                    log.exception("GeminiClient.generate failed (non-retryable)")
+                    raise LLMError(str(exc)) from exc
+                if attempt >= _GEMINI_MAX_RETRIES - 1:
+                    break
+                # Exponential backoff with jitter: 4, 8, 16, 32 seconds plus
+                # up to 1 second of randomness so concurrent retries don't
+                # stampede.
+                delay = _GEMINI_BASE_BACKOFF_SECS * (2 ** attempt) + random.uniform(0, 1)
+                log.warning(
+                    "GeminiClient.generate transient failure (attempt %d/%d): %s; "
+                    "sleeping %.1fs before retry",
+                    attempt + 1,
+                    _GEMINI_MAX_RETRIES,
+                    exc.__class__.__name__,
+                    delay,
+                )
+                time.sleep(delay)
+
+        log.exception(
+            "GeminiClient.generate exhausted retries (%d attempts)",
+            _GEMINI_MAX_RETRIES,
+        )
+        raise LLMError(str(last_exc)) from last_exc
 
 
 class CachedLLMClient(LLMClient):
